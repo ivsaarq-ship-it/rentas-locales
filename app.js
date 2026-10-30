@@ -24,23 +24,54 @@ function tx(store, modo, fn) {
     t.onerror = () => mal(t.error);
   });
 }
-const guardar = () => tx("estado", "readwrite", s => s.put(E, "principal"));
-const leerFoto = id => tx("fotos", "readonly", s => s.get(id));
+// Cada cambio queda con fecha; si Drive está conectado se sube solo unos segundos después.
+const guardarLocal = () => tx("estado", "readwrite", s => s.put(E, "principal"));
+async function guardar() {
+  E.guardadoEn = new Date().toISOString();
+  await guardarLocal();
+  programarSync();
+}
+const leerFotoLocal = id => tx("fotos", "readonly", s => s.get(id));
+// Si la foto se tomó en otro aparato, se baja de Drive la primera vez que se ve.
+async function leerFoto(id) {
+  const b = await leerFotoLocal(id);
+  if (b || !drive.token) return b;
+  try {
+    const f = (await driveArchivos())[id + ".jpg"];
+    if (!f) return undefined;
+    const r = await driveFetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`);
+    const blob = await r.blob();
+    await ponerFoto(id, blob);
+    return blob;
+  } catch (e) { return undefined; }
+}
 const ponerFoto = (id, blob) => tx("fotos", "readwrite", s => s.put(blob, id));
 const borrarFoto = id => tx("fotos", "readwrite", s => s.delete(id));
 
 function estadoInicial() {
   return {
     version: 1,
-    ajustes: { ...AJUSTES_INICIALES, plantillaContrato: PLANTILLA_CONTRATO, plantillaPagare: PLANTILLA_PAGARE, textoRequisitos: TEXTO_REQUISITOS },
+    ajustes: { ...AJUSTES_INICIALES, plantillaContrato: PLANTILLA_CONTRATO, plantillaPagare: PLANTILLA_PAGARE, textoRequisitos: TEXTO_REQUISITOS,
+      municipios: structuredClone(MUNICIPIOS_INICIALES), inePropietaria: [] },
     plazas: PLAZAS_INICIALES.map(p => ({ ...p, predial: "" })),
     locales: LOCALES_INICIALES.map(([plazaId, numero, nivel, giro, estado], i) => ({
       id: "L" + (i + 1), plazaId, numero, nivel, giro, estado,
-      licencia: "No", licenciaVence: "", luz: "", notas: "", fotosEntrega: [], fotosRecepcion: [],
+      licencia: "No", licenciaVence: "", luz: "", notas: "", fotosEntrega: [], fotosRecepcion: [], fotosLicencia: [],
     })),
     contratos: [], pagos: [], gastos: [], reparaciones: [],
     ultimoRespaldo: "",
   };
+}
+
+// Completa datos que no existían en versiones anteriores de la app.
+function migrar(e) {
+  const a = e.ajustes;
+  if (!a.municipios) a.municipios = structuredClone(MUNICIPIOS_INICIALES);
+  if (!a.inePropietaria) a.inePropietaria = [];
+  if (!a.docsLicencia || a.docsLicencia === DOCS_LICENCIA_ANTERIOR) a.docsLicencia = DOCS_LICENCIA_TEXTO;
+  for (const p of e.plazas) if (p.municipio === undefined) p.municipio = (PLAZAS_INICIALES.find(x => x.id === p.id) || {}).municipio || "";
+  for (const l of e.locales) if (!l.fotosLicencia) l.fotosLicencia = [];
+  return e;
 }
 
 /* ================= Utilidades ================= */
@@ -217,15 +248,20 @@ function alertas() {
     else if (d <= 15) A.push(["a", `Gasto vence en ${d} días · ${pesos(g.monto)}`, `${g.concepto} · ${plaza(g.plazaId).nombre}`, "#/gastos"]);
   }
   for (const r of E.reparaciones) if (r.estado !== "Terminada") A.push(["a", "Reparación pendiente", `${r.titulo} · ${nombreLocal(local(r.localId))}`, "#/local/" + r.localId]);
-  if (!E.ultimoRespaldo || diasEntre(E.ultimoRespaldo, hoy) > 7) A.push(["a", "Haz tu respaldo semanal", E.ultimoRespaldo ? "Último: " + fechaBonita(E.ultimoRespaldo) : "Aún no tienes respaldo", "#/respaldo"]);
-  return A.sort((a, b) => (a[0] === b[0] ? 0 : a[0] === "r" ? -1 : 1));
+  if (driveConectado() && !driveActivo()) A.unshift(["a", "Toca para conectar Google Drive", "Así se guarda todo solo y ves lo mismo en tus aparatos", "#/drive"]);
+  else if (!driveConectado() && (!E.ultimoRespaldo || diasEntre(E.ultimoRespaldo, hoy) > 7)) A.push(["a", "Haz tu respaldo semanal", E.ultimoRespaldo ? "Último: " + fechaBonita(E.ultimoRespaldo) : "Aún no tienes respaldo", "#/respaldo"]);
+  A.sort((a, b) => (a[0] === b[0] ? 0 : a[0] === "r" ? -1 : 1));
+  // El aviso de Drive siempre arriba
+  const i = A.findIndex(x => /Google Drive/.test(x[1]));
+  if (i > 0) A.unshift(A.splice(i, 1)[0]);
+  return A;
 }
 function iconoAlerta(t) {
   if (/licencia/i.test(t)) return "doc";
   if (/contrato/i.test(t)) return "cal";
   if (/luz/i.test(t)) return "luz";
   if (/expediente|datos/i.test(t)) return "pdf";
-  if (/respaldo/i.test(t)) return "respaldo";
+  if (/respaldo|drive/i.test(t)) return "respaldo";
   if (/reparaci/i.test(t)) return "reparar";
   if (/gasto/i.test(t)) return "gasto";
   return "alerta";
@@ -281,7 +317,8 @@ async function compartirFoto(id) {
 async function quitarFoto(id) {
   if (!confirm("¿Borrar esta foto?")) return;
   const quita = arr => { const i = arr.indexOf(id); if (i >= 0) arr.splice(i, 1); };
-  E.locales.forEach(l => { quita(l.fotosEntrega); quita(l.fotosRecepcion); });
+  E.locales.forEach(l => { quita(l.fotosEntrega); quita(l.fotosRecepcion); quita(l.fotosLicencia || []); });
+  quita(E.ajustes.inePropietaria || []);
   E.contratos.forEach(c => Object.values(c.docs || {}).forEach(d => quita(d.fotos || [])));
   E.pagos.forEach(p => { if (p.foto === id) p.foto = ""; });
   E.reparaciones.forEach(r => quita(r.fotos || []));
@@ -434,6 +471,13 @@ function vInicio() {
 }
 
 let filtroLocales = "todos";
+// Plazas desplegadas; se recuerda en este aparato.
+const plazasAbiertas = new Set((() => { try { return JSON.parse(localStorage.getItem("plazasAbiertas") || "[]"); } catch (e) { return []; } })());
+function plazaAbierta(id, abierta) {
+  if (filtroLocales !== "todos" || location.hash.startsWith("#/vacios")) return;
+  abierta ? plazasAbiertas.add(id) : plazasAbiertas.delete(id);
+  try { localStorage.setItem("plazasAbiertas", JSON.stringify([...plazasAbiertas])); } catch (e) {}
+}
 function vLocales(soloVacios) {
   const debeL = l => { const c = contratoActivo(l.id); return !!(c && atrasos(c).length); };
   const vacioL = l => l.estado === "vacio" || l.estado === "venta";
@@ -443,14 +487,15 @@ function vLocales(soloVacios) {
     const ls = E.locales.filter(l => l.plazaId === p.id && pasa(l));
     if (!ls.length) return "";
     const r = ls.filter(l => l.estado === "rentado").length;
-    return `<div class="card"><div class="plaza">${esc(p.nombre)} <span>${ls.length} locales${soloVacios ? "" : " · " + r + " rentados"}</span></div>
+    const abierta = soloVacios || filtroLocales !== "todos" || plazasAbiertas.has(p.id);
+    return `<details class="card plaza-d" ${abierta ? "open" : ""} ontoggle="plazaAbierta('${p.id}',this.open)"><summary class="plaza-cab"><span><b>${esc(p.nombre)}</b><small>${ls.length} ${ls.length === 1 ? "local" : "locales"}${soloVacios ? "" : " · " + r + (r === 1 ? " rentado" : " rentados")}</small></span>${ic("flecha")}</summary>
       ${ls.map(l => {
         const c = contratoActivo(l.id);
         const sub = [l.nivel, c ? c.inquilino.nombre : ""].filter(Boolean).join(" · ");
         const est = estadoLocal(l);
         if (est[0] === "Atrasado") est[0] = "Debe " + pesos(atrasos(c).reduce((s, x) => s + x.saldo, 0));
         return `<a class="fila" href="${soloVacios ? "#/rentar/" + l.id : "#/local/" + l.id}"><div><b>${esc(l.numero)}${l.giro ? " · " + esc(l.giro) : ""}</b><small>${esc(sub)}</small></div>${chip(est)}</a>`;
-      }).join("")}</div>`;
+      }).join("")}</details>`;
   }).join("");
   pantalla(soloVacios ? "Elige el local" : "Locales", soloVacios ? "Locales disponibles" : E.plazas.length + " plazas",
     (soloVacios ? "" : `<label class="buscar">${ic("buscar")}<input placeholder="Buscar local o inquilino" aria-label="Buscar local o inquilino" oninput="filtrar(this.value)"></label>
@@ -461,6 +506,12 @@ function vLocales(soloVacios) {
 function filtrar(q) {
   q = q.toLowerCase();
   document.querySelectorAll("#main .fila").forEach(f => (f.style.display = f.textContent.toLowerCase().includes(q) ? "" : "none"));
+  // Al buscar se abren las plazas que tienen resultados
+  document.querySelectorAll("#main .plaza-d").forEach(d => {
+    const hay = [...d.querySelectorAll(".fila")].some(f => f.style.display !== "none");
+    d.style.display = hay ? "" : "none";
+    if (q) d.open = hay;
+  });
 }
 
 function vLocal(id) {
@@ -535,6 +586,10 @@ function vLocal(id) {
   }
 
   // Fotos del local
+  const fl = l.fotosLicencia || [];
+  h += `<h2>Fotos para licencia · ${Math.min(fl.length, 3)} de 3</h2><div class="card">
+    <p class="sub" style="margin-top:4px">Frente y los dos costados, que se vean los vecinos.</p>
+    <div class="fotos">${miniaturas(fl)}${fl.length < 3 ? `<button class="mas-foto" aria-label="Agregar foto para licencia" onclick="fotoLocal('${id}','fotosLicencia')">${ic("foto")}</button>` : ""}</div></div>`;
   h += `<h2>Fotos del local</h2><div class="card">
     <div class="sub">Al entregarlo</div><div class="fotos">${miniaturas(l.fotosEntrega)}<button class="mas-foto" aria-label="Agregar foto" onclick="fotoLocal('${id}','fotosEntrega')">${ic("foto")}</button></div>
     <div class="sub">Al recibirlo</div><div class="fotos">${miniaturas(l.fotosRecepcion)}<button class="mas-foto" aria-label="Agregar foto" onclick="fotoLocal('${id}','fotosRecepcion')">${ic("foto")}</button></div></div>`;
@@ -865,7 +920,8 @@ async function fotoDoc(cid, did) {
 async function fotoLocal(id, campo) {
   const ids = await pedirFotos();
   if (!ids.length) return;
-  local(id)[campo].push(...ids);
+  const l = local(id);
+  (l[campo] = l[campo] || []).push(...ids);
   await guardar(); render();
 }
 function renovar(cid) {
@@ -898,15 +954,51 @@ function whatsappRequisitos() {
   whatsapp(tel, E.ajustes.textoRequisitos);
 }
 const envio = {};
+const municipioDe = l => E.ajustes.municipios.find(m => m.nombre === plaza(l.plazaId).municipio);
 function docsLicencia(cid) {
-  const c = E.contratos.find(x => x.id === cid), l = local(c.localId), p = plaza(l.plazaId);
+  const c = E.contratos.find(x => x.id === cid), l = local(c.localId), p = plaza(l.plazaId), m = municipioDe(l);
+  const fl = l.fotosLicencia || [], ine = E.ajustes.inePropietaria || [];
+  const ineInq = c.docs?.ineInq?.fotos || [], compInq = c.docs?.compInq?.fotos || [];
+  const listo = (ok, texto, accion) => `<div class="chk"><span>${ok ? "✓ " : ""}${texto}</span>${ok ? "" : accion || '<span class="chip c-a">Falta</span>'}</div>`;
   envio.tel = c.inquilino.tel;
-  const texto = envio.texto = `Hola ${c.inquilino.nombre.split(" ")[0]}, para tu licencia de giro del local ${l.numero}:\n\n*Datos del inmueble*\n${p.direccion}\nLocal ${l.numero}${l.nivel ? ", " + l.nivel : ""}\n${p.predial ? "Cuenta predial: " + p.predial + "\n" : ""}\n*Documentos que te comparto*\n${E.ajustes.docsLicencia.split("\n").map(x => "• " + x).join("\n")}\n\nAvísame cuando la tengas para registrarla. Gracias.`;
-  hoja(`<p class="sub">1. Manda el mensaje. 2. Comparte el contrato en PDF en el mismo chat.</p>
+  envio.texto = `Hola ${c.inquilino.nombre.split(" ")[0]}, para tu licencia de giro del local ${l.numero}:\n\n*Datos del inmueble*\n${p.direccion}\nLocal ${l.numero}${l.nivel ? ", " + l.nivel : ""}\n${p.predial ? "Cuenta predial: " + p.predial + "\n" : ""}\n*Documentos que te comparto*\n${E.ajustes.docsLicencia.split("\n").map(x => "• " + x).join("\n")}` +
+    (m ? `\n\n*${m.oficina} de ${m.nombre}*\nTel. ${m.telefono}\nPágina: ${m.pagina}\nFormato de pago: ${m.formato}` : "") + `\n\nAvísame cuando tengas tu licencia para registrarla. Gracias.`;
+  envio.cid = cid;
+  hoja(`<div class="card">
+      ${listo(true, "Contrato de arrendamiento (se hace solo)")}
+      ${listo(ine.length, "INE de la propietaria", `<a class="chip c-a" href="#/ajustes">Subir</a>`)}
+      ${listo(ineInq.length, "INE del inquilino")}
+      ${listo(compInq.length, "Comprobante de domicilio del inquilino")}
+      ${listo(fl.length >= 3, `3 fotos del local (${Math.min(fl.length, 3)} de 3)`)}
+      ${listo(!!m, m ? "Datos de " + m.nombre : "Municipio de la plaza", `<a class="chip c-a" href="#/plazas">Elegir</a>`)}
+    </div>
+    ${m ? `<div class="card"><b>${esc(m.nombre)} · Padrón y Licencias</b><p class="sub" style="font-weight:400">${esc(m.oficina)}</p>
+      <div class="dato"><span>Teléfono</span><a href="tel:${esc(m.telefono.replace(/\(.*\)/, "").replace(/\s/g, ""))}">${esc(m.telefono)}</a></div>
+      <div class="dato"><span>Página</span><a href="${esc(m.pagina)}" target="_blank" rel="noopener">Abrir</a></div>
+      <div class="dato"><span>Formato de pago</span><a href="${esc(m.formato)}" target="_blank" rel="noopener">Abrir</a></div></div>` : ""}
+    <p class="sub">1. Manda el mensaje. 2. Comparte los archivos en el mismo chat.</p>
     <button class="btn wa" onclick="whatsapp(envio.tel, envio.texto)">${ic("wa")}Mandar mensaje por WhatsApp</button>
-    <button class="btn sec" onclick="compartirContrato('${cid}')">${ic("pdf")}Compartir contrato PDF</button>
-    <button class="btn sec" onclick="marcarDoc('${cid}','licencia',true);cerrarHoja()">Marcar como entregados</button>
-    <p class="sub">Puedes cambiar la lista en Más › Ajustes.</p>`, "Docs para licencia");
+    <button class="btn" onclick="compartirPaqueteLicencia(envio.cid)">${ic("pdf")}Compartir contrato, INE y fotos</button>
+    <button class="btn sec" onclick="marcarDoc('${cid}','licencia',true);cerrarHoja()">Marcar como entregados</button>`, "Docs para licencia");
+}
+// Junta contrato en PDF y fotos en un solo envío (WhatsApp, correo, Drive…).
+async function compartirPaqueteLicencia(cid) {
+  const c = E.contratos.find(x => x.id === cid), l = local(c.localId);
+  const archivos = [];
+  const contrato = pdf("", llenar(E.ajustes.plantillaContrato, datosContrato(c)), `Contrato ${nombreLocal(l)}.pdf`);
+  if (contrato) archivos.push(contrato);
+  const grupos = [["INE propietaria", E.ajustes.inePropietaria], ["INE inquilino", c.docs?.ineInq?.fotos], ["Comprobante inquilino", c.docs?.compInq?.fotos], ["Foto local", l.fotosLicencia]];
+  for (const [nombre, ids] of grupos) {
+    let n = 1;
+    for (const id of ids || []) {
+      const b = await leerFoto(id);
+      if (b) archivos.push(new File([b], `${nombre} ${n++}.jpg`, { type: "image/jpeg" }));
+    }
+  }
+  if (navigator.canShare && navigator.canShare({ files: archivos })) {
+    try { await navigator.share({ files: archivos, title: "Docs para licencia" }); return; } catch (e) { if (e.name === "AbortError") return; }
+  }
+  for (const f of archivos) await compartirArchivo(f, f.name);
 }
 function editarReparacion(rid, localId) {
   const r = E.reparaciones.find(x => x.id === rid) || { id: "R" + uid(), localId, titulo: "", proveedor: "", costo: "", estado: "Pendiente", fecha: hoyISO(), fotos: [], nuevo: true };
@@ -1085,7 +1177,7 @@ function restaurar() {
       if (!confirm(`¿Reemplazar todo con el respaldo del ${fechaBonita(r.fecha)}?`)) return;
       await tx("fotos", "readwrite", s => s.clear());
       for (const [id, url] of Object.entries(r.fotos || {})) await ponerFoto(id, await (await fetch(url)).blob());
-      E = r.estado; await guardar();
+      E = migrar(r.estado); await guardar();
       alert("✅ Respaldo cargado"); location.hash = "#/inicio"; render();
     } catch (e) { alert("No se pudo cargar: " + e.message); }
   };
@@ -1105,24 +1197,45 @@ function vMas() {
     <a class="fila" href="#/reporte"><div>${ic("gasto")}Reporte para el contador<small>Ingresos, gastos y ganancia</small></div>${ic("flecha")}</a>
     <a class="fila" href="#/banco"><div>${ic("banco")}Revisar con el banco<small>Sube tu estado de cuenta</small></div>${ic("flecha")}</a>
     <a class="fila" onclick="exportarCalendario()"><div>${ic("cal")}Recordatorios en mi calendario<small>Rentas, renovaciones y licencias</small></div>${ic("flecha")}</a>
+    <a class="fila" href="#/drive"><div>${ic("respaldo")}Google Drive<small>${driveActivo() ? "Conectado: se guarda solo" : "Respaldo automático y usar en varios aparatos"}</small></div>${ic("flecha")}</a>
     <a class="fila" href="#/respaldo"><div>${ic("respaldo")}Respaldo<small>${E.ultimoRespaldo ? "Último: " + fechaBonita(E.ultimoRespaldo) : "Aún no tienes"}</small></div>${ic("flecha")}</a>
     <a class="fila" href="#/plazas"><div>${ic("plaza")}Plazas<small>Direcciones y predial</small></div>${ic("flecha")}</a>
     <a class="fila" href="#/ajustes"><div>${ic("ajustes")}Ajustes<small>Gracia, recargos, contrato modelo</small></div>${ic("flecha")}</a></div>`);
 }
 function vPlazas() {
-  pantalla("Plazas", "", `<div class="card">${E.plazas.map(p => `<div class="fila" onclick="editarPlaza('${p.id}')"><div>${esc(p.nombre)}<small>${esc(p.direccion)}</small></div>${ic("flecha")}</div>`).join("")}</div>
-    <button class="btn sec" onclick="editarPlaza('')">${ic("mas")}Agregar plaza</button>`, "#/mas");
+  pantalla("Plazas", "", `<div class="card">${E.plazas.map(p => `<div class="fila" onclick="editarPlaza('${p.id}')"><div><b>${esc(p.nombre)}</b><small>${esc(p.municipio || "Sin municipio")} · ${esc(p.direccion)}</small></div>${ic("flecha")}</div>`).join("")}</div>
+    <button class="btn sec" onclick="editarPlaza('')">${ic("mas")}Agregar plaza</button>
+    <h2>Padrón y Licencias por municipio</h2><div class="card">${E.ajustes.municipios.map((m, i) => `<div class="fila" onclick="editarMunicipio(${i})"><div><b>${esc(m.nombre)}</b><small>${esc(m.telefono)}</small></div>${ic("flecha")}</div>`).join("")}</div>
+    <button class="btn sec" onclick="editarMunicipio(-1)">${ic("mas")}Agregar municipio</button>
+    <p class="sub" style="font-weight:400">Datos públicos de cada municipio (octubre 2026). Confirma por teléfono antes de ir.</p>`, "#/mas");
 }
 function editarPlaza(id) {
   const p = E.plazas.find(x => x.id === id) || { id: "P" + uid(), nombre: "", direccion: "", predial: "", nuevo: true };
-  formulario(p.nuevo ? "Nueva plaza" : "Plaza", [["nombre", "Nombre"], ["direccion", "Dirección completa", "textarea", 2], ["predial", "Cuenta predial"]], p, d => {
+  formulario(p.nuevo ? "Nueva plaza" : "Plaza", [["nombre", "Nombre"], ["direccion", "Dirección completa", "textarea", 2], ["predial", "Cuenta predial"],
+    ["municipio", "Municipio (para la licencia)", "select", ["", ...E.ajustes.municipios.map(m => m.nombre)]]], p, d => {
     Object.assign(p, d);
     if (p.nuevo) { delete p.nuevo; E.plazas.push(p); }
   });
 }
+function editarMunicipio(i) {
+  const m = E.ajustes.municipios[i] || { nombre: "", oficina: "Dirección de Padrón y Licencias", telefono: "", pagina: "", formato: "" };
+  formulario(i < 0 ? "Nuevo municipio" : m.nombre, [["nombre", "Municipio"], ["oficina", "Oficina y dirección", "textarea", 2], ["telefono", "Teléfono"],
+    ["pagina", "Página para el trámite", "url"], ["formato", "Formato de pago (link)", "url"]], m, d => {
+    Object.assign(m, d);
+    if (i < 0) E.ajustes.municipios.push(m);
+  });
+}
+async function fotoPropietaria() {
+  const ids = await pedirFotos();
+  if (!ids.length) return;
+  E.ajustes.inePropietaria.push(...ids);
+  await guardar(); render();
+}
 function vAjustes() {
   const a = E.ajustes;
-  pantalla("Ajustes", "", `<form id="fa" class="card">
+  pantalla("Ajustes", "", `<div class="card"><b>INE de la propietaria</b><p class="sub" style="font-weight:400">Se usa en los documentos para la licencia de giro de tus inquilinos.</p>
+    <div class="fotos">${miniaturas(a.inePropietaria)}<button class="mas-foto" aria-label="Agregar foto de tu INE" onclick="fotoPropietaria()">${ic("foto")}</button></div></div>
+    <form id="fa" class="card">
     <label>Nombre de la arrendadora<input name="arrendador" value="${esc(a.arrendador)}"></label>
     <label>Ciudad donde se firman contratos<input name="ciudadFirma" value="${esc(a.ciudadFirma)}"></label>
     <label>Días de gracia (hábiles)<input name="gracia" type="number" inputmode="numeric" value="${a.gracia}"></label>
@@ -1146,6 +1259,136 @@ function vAjustes() {
   };
 }
 
+/* ================= Google Drive: respaldo automático y mismos datos en varios aparatos ================= */
+// Todo queda en una carpeta del Drive de quien conecta; la app solo ve los archivos que ella misma creó.
+const CARPETA_DRIVE = "Rentas (respaldo de la app)";
+const drive = { token: "", vence: 0, carpeta: "", archivos: null, timer: 0, ocupado: false, error: "" };
+const ls = {
+  get: k => { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} },
+};
+const driveListo = () => !!GOOGLE_CLIENT_ID;
+const driveConectado = () => ls.get("driveOn") === "1";
+const driveActivo = () => drive.token && Date.now() < drive.vence;
+
+function cargarGoogle() {
+  if (window.google && google.accounts) return Promise.resolve();
+  return new Promise((ok, mal) => {
+    const sc = document.createElement("script");
+    sc.src = "https://accounts.google.com/gsi/client";
+    sc.onload = ok; sc.onerror = () => mal(new Error("Sin internet"));
+    document.head.appendChild(sc);
+  });
+}
+// Pide permiso a Google (necesita un toque de la persona). Después sincroniza.
+async function conectarDrive() {
+  if (!driveListo()) return alert("Falta configurar Google Drive (lo hace Sergio una sola vez).");
+  try { await cargarGoogle(); } catch (e) { return alert("Necesitas internet para conectar Drive."); }
+  const cliente = google.accounts.oauth2.initTokenClient({
+    client_id: GOOGLE_CLIENT_ID,
+    scope: "https://www.googleapis.com/auth/drive.file",
+    callback: async r => {
+      if (r.error) { drive.error = "Google no dio permiso"; return render(); }
+      drive.token = r.access_token;
+      drive.vence = Date.now() + (Number(r.expires_in) || 3600) * 1000 - 60000;
+      ls.set("driveOn", "1");
+      await sincronizar(true);
+    },
+  });
+  cliente.requestAccessToken({ prompt: driveConectado() ? "" : "consent" });
+}
+async function driveFetch(url, opciones = {}) {
+  const r = await fetch(url, { ...opciones, headers: { ...(opciones.headers || {}), Authorization: "Bearer " + drive.token } });
+  if (r.status === 401) { drive.token = ""; throw new Error("La sesión de Google expiró"); }
+  if (!r.ok) throw new Error("Drive respondió " + r.status);
+  return r;
+}
+async function driveCarpeta() {
+  if (drive.carpeta) return drive.carpeta;
+  const q = encodeURIComponent(`name='${CARPETA_DRIVE}' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
+  const r = await (await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)&spaces=drive`)).json();
+  if (r.files && r.files.length) return (drive.carpeta = r.files[0].id);
+  const n = await (await driveFetch("https://www.googleapis.com/drive/v3/files?fields=id", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: CARPETA_DRIVE, mimeType: "application/vnd.google-apps.folder" }),
+  })).json();
+  return (drive.carpeta = n.id);
+}
+async function driveArchivos(fresco) {
+  if (drive.archivos && !fresco) return drive.archivos;
+  const carpeta = await driveCarpeta(), mapa = {};
+  let pagina = "";
+  do {
+    const q = encodeURIComponent(`'${carpeta}' in parents and trashed=false`);
+    const r = await (await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=nextPageToken,files(id,name)&pageSize=1000${pagina ? "&pageToken=" + pagina : ""}`)).json();
+    for (const f of r.files || []) mapa[f.name] = f;
+    pagina = r.nextPageToken || "";
+  } while (pagina);
+  return (drive.archivos = mapa);
+}
+async function driveSubir(nombre, blob, tipo) {
+  const existente = (await driveArchivos())[nombre];
+  if (existente) {
+    await driveFetch(`https://www.googleapis.com/upload/drive/v3/files/${existente.id}?uploadType=media`, { method: "PATCH", headers: { "Content-Type": tipo }, body: blob });
+    return;
+  }
+  const meta = { name: nombre, parents: [await driveCarpeta()] };
+  const cuerpo = new FormData();
+  cuerpo.append("metadata", new Blob([JSON.stringify(meta)], { type: "application/json" }));
+  cuerpo.append("file", blob);
+  const f = await (await driveFetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name", { method: "POST", body: cuerpo })).json();
+  drive.archivos[f.name] = f;
+}
+function programarSync() {
+  if (!driveActivo()) return;
+  clearTimeout(drive.timer);
+  drive.timer = setTimeout(() => sincronizar(false), 4000);
+}
+// Junta los datos de este aparato con los de Drive. Gana el más nuevo; si los dos cambiaron, pregunta.
+async function sincronizar(avisar) {
+  if (!driveActivo() || drive.ocupado) return;
+  drive.ocupado = true; drive.error = "";
+  try {
+    const archivos = await driveArchivos(true);
+    const ultima = ls.get("ultimaSync") || "";
+    let usarRemoto = false;
+    if (archivos["datos.json"]) {
+      const remoto = await (await driveFetch(`https://www.googleapis.com/drive/v3/files/${archivos["datos.json"].id}?alt=media`)).json();
+      const cambioRemoto = (remoto.guardadoEn || "") > ultima, cambioLocal = (E.guardadoEn || "") > ultima;
+      if (cambioRemoto && cambioLocal && remoto.guardadoEn !== E.guardadoEn)
+        usarRemoto = confirm("Hay cambios en otro aparato y también en este.\n\nAceptar: usar los de Drive (otro aparato).\nCancelar: quedarme con los de este aparato.");
+      else usarRemoto = cambioRemoto && remoto.guardadoEn !== E.guardadoEn;
+      if (usarRemoto) { E = migrar(remoto); await guardarLocal(); }
+    }
+    // Fotos nuevas de este aparato
+    const ids = await tx("fotos", "readonly", st => st.getAllKeys());
+    for (const id of ids) if (!archivos[id + ".jpg"]) await driveSubir(id + ".jpg", await leerFotoLocal(id), "image/jpeg");
+    E.ultimoRespaldo = hoyISO();
+    if (!usarRemoto) await driveSubir("datos.json", new Blob([JSON.stringify(E)], { type: "application/json" }), "application/json");
+    await guardarLocal();
+    ls.set("ultimaSync", E.guardadoEn || "");
+    ls.set("ultimaSyncHora", new Date().toISOString());
+    if (avisar) setTimeout(() => alert("✅ Sincronizado con Google Drive"), 50);
+  } catch (e) {
+    drive.error = e.message;
+  } finally {
+    drive.ocupado = false;
+    render();
+  }
+}
+function vDrive() {
+  const hora = ls.get("ultimaSyncHora");
+  const estado = !driveListo() ? "Falta configurar (lo hace Sergio una vez)" : driveActivo() ? "Conectado" : driveConectado() ? "Toca el botón para volver a conectar" : "No conectado";
+  pantalla("Google Drive", "Respaldo automático", `
+    <div class="card"><p>Con Drive conectado, <b>cada cambio se guarda solo</b> en tu Google Drive, y puedes usar la app en <b>otro aparato</b> (celular o laptop) con los mismos datos: abre el link ahí y conecta la misma cuenta de Google.</p>
+    <div class="dato"><span>Estado</span><b>${esc(estado)}</b></div>
+    <div class="dato"><span>Última vez</span>${hora ? fechaBonita(hora.slice(0, 10)) + " " + hora.slice(11, 16) : "Nunca"}</div>
+    ${drive.error ? `<div class="aviso">${esc(drive.error)}</div>` : ""}</div>
+    <button class="btn" onclick="${driveActivo() ? "sincronizar(true)" : "conectarDrive()"}" ${driveListo() ? "" : "disabled"}>${ic("respaldo")}${driveActivo() ? "Sincronizar ahora" : "Conectar con Google Drive"}</button>
+    <p class="sub" style="font-weight:400">Google pide permiso de nuevo cada vez que abres la app; es un toque. Tus datos quedan en tu Drive, en la carpeta «${CARPETA_DRIVE}». Nadie más los ve.</p>
+    <a class="btn sec" href="#/respaldo">Respaldo manual en archivo</a>`, "#/mas");
+}
+
 /* ================= Rutas ================= */
 function render() {
   const [ruta, arg] = location.hash.replace(/^#\/?/, "").split("?")[0].split("/");
@@ -1153,10 +1396,10 @@ function render() {
   const vistas = {
     inicio: vInicio, locales: () => vLocales(false), vacios: () => vLocales(true), local: () => vLocal(arg),
     pagos: () => vPagos(arg), rentar: () => vRentar(arg, q.has("existente")), gastos: vGastos, reporte: () => vReporte(arg),
-    banco: vBanco, respaldo: vRespaldo, mas: vMas, ajustes: vAjustes, plazas: vPlazas,
+    banco: vBanco, respaldo: vRespaldo, drive: vDrive, mas: vMas, ajustes: vAjustes, plazas: vPlazas,
   };
   (vistas[ruta] || vInicio)();
-  const tab = { local: "locales", vacios: "inicio", rentar: "locales", gastos: "mas", reporte: "mas", banco: "mas", respaldo: "mas", ajustes: "mas", plazas: "mas" }[ruta] || ruta || "inicio";
+  const tab = { local: "locales", vacios: "inicio", rentar: "locales", gastos: "mas", reporte: "mas", banco: "mas", respaldo: "mas", drive: "mas", ajustes: "mas", plazas: "mas" }[ruta] || ruta || "inicio";
   document.querySelectorAll("nav a").forEach(a => a.classList.toggle("on", a.dataset.t === tab));
 }
 let rutaAnterior = "";
@@ -1171,7 +1414,8 @@ window.addEventListener("hashchange", () => {
 (async () => {
   db = await abrirDB();
   E = await tx("estado", "readonly", s => s.get("principal"));
-  if (!E) { E = estadoInicial(); await guardar(); }
+  // Sin fecha de cambio: un aparato nuevo toma los datos de Drive sin preguntar.
+  if (!E) { E = estadoInicial(); await guardarLocal(); } else migrar(E);
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
   render();
   if ("serviceWorker" in navigator && location.protocol.startsWith("http")) navigator.serviceWorker.register("sw.js");

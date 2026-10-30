@@ -1,13 +1,24 @@
 // Datos iniciales y plantillas. Lo que Sandra cambie se guarda en su celular, no aquí.
 
+// Conexión con Google Drive (respaldo automático y sincronizar aparatos). Se llena con el ID de cliente de Google de Sergio.
+const GOOGLE_CLIENT_ID = "";
+
+// Oficinas de Padrón y Licencias. Datos públicos de cada municipio (oct 2026); confirmar por teléfono antes de ir.
+const MUNICIPIOS_INICIALES = [
+  { nombre: "Tlaquepaque", oficina: "Dirección de Padrón y Licencias, Niños Héroes 360, Col. El Álamo", telefono: "33 3837 0361 (conmutador 33 1057 6000)", pagina: "https://www.tlaquepaque.gob.mx", formato: "https://www.tlaquepaque.gob.mx" },
+  { nombre: "Guadalajara", oficina: "Dirección de Padrón y Licencias, 5 de Febrero 249 (Unidad Administrativa Reforma)", telefono: "33 3669 1300", pagina: "https://visorurbano.guadalajara.gob.mx", formato: "https://transparencia.guadalajara.gob.mx/sites/default/files/Costo_Licencia_Giro_Tipo_A_y_B.pdf" },
+  { nombre: "Zapopan", oficina: "Dirección de Padrón y Licencias", telefono: "33 3818 2200", pagina: "https://vdigital.zapopan.gob.mx", formato: "https://retys.zapopan.gob.mx/tramites/355/formato" },
+  { nombre: "Tlajomulco", oficina: "Dirección de Padrón y Licencias", telefono: "33 3283 4400 (conmutador)", pagina: "https://padronylicencias.tlajomulco.gob.mx", formato: "https://padronylicencias.tlajomulco.gob.mx" },
+];
+
 const PLAZAS_INICIALES = [
-  { id: "TES", nombre: "Tesoro", direccion: "Prol. Av. Las Fuentes 2846, Paisajes del Tesoro, 45080 San Pedro Tlaquepaque, Jal." },
-  { id: "CRE", nombre: "Camino Real", direccion: "Av. Camino Real a Colima 161, Haciendas La Candelaria, 45600 Santa Anita, Jal." },
-  { id: "CAN", nombre: "La Candelaria", direccion: "Virgen de San Juan de Los Lagos 540, Haciendas La Candelaria, 45600 Santa Anita, Jal." },
-  { id: "STM", nombre: "Sta. María", direccion: "C. Comonfort 6102, El Real, 45601 San Pedro Tlaquepaque, Jal." },
-  { id: "BAZ", nombre: "Bazar Sur", direccion: "Cerca de Colón 1000, Santa María Tequepexpan, 45601 San Pedro Tlaquepaque, Jal." },
-  { id: "VAR", nombre: "Plaza Variedades", direccion: "Av. Juárez 165, Zona Centro, 44100 Guadalajara, Jal." },
-  { id: "LMT", nombre: "López Mateos", direccion: "Plaza Comercial Sur VIP, Av. Adolfo López Mateos Sur 2043, El Mante, 45235 Zapopan, Jal." },
+  { id: "TES", municipio: "Tlaquepaque", nombre: "Tesoro", direccion: "Prol. Av. Las Fuentes 2846, Paisajes del Tesoro, 45080 San Pedro Tlaquepaque, Jal." },
+  { id: "CRE", municipio: "Tlaquepaque", nombre: "Camino Real", direccion: "Av. Camino Real a Colima 161, Haciendas La Candelaria, 45600 Santa Anita, Jal." },
+  { id: "CAN", municipio: "Tlaquepaque", nombre: "La Candelaria", direccion: "Virgen de San Juan de Los Lagos 540, Haciendas La Candelaria, 45600 Santa Anita, Jal." },
+  { id: "STM", municipio: "Tlaquepaque", nombre: "Sta. María", direccion: "C. Comonfort 6102, El Real, 45601 San Pedro Tlaquepaque, Jal." },
+  { id: "BAZ", municipio: "Tlaquepaque", nombre: "Bazar Sur", direccion: "Cerca de Colón 1000, Santa María Tequepexpan, 45601 San Pedro Tlaquepaque, Jal." },
+  { id: "VAR", municipio: "Guadalajara", nombre: "Plaza Variedades", direccion: "Av. Juárez 165, Zona Centro, 44100 Guadalajara, Jal." },
+  { id: "LMT", municipio: "Zapopan", nombre: "López Mateos", direccion: "Plaza Comercial Sur VIP, Av. Adolfo López Mateos Sur 2043, El Mante, 45235 Zapopan, Jal." },
 ];
 
 // [plaza, número, nivel, giro, estado]
@@ -53,6 +64,11 @@ const DOCS_EXPEDIENTE = [
   { id: "licencia", nombre: "Docs para su licencia entregados", foto: false },
 ];
 
+const DOCS_LICENCIA_ANTERIOR =
+  "Copia del contrato de arrendamiento firmado\nCopia de identificación de la arrendadora\nCopia del último recibo de predial del inmueble\nDirección completa y número del local\n(Confirma en ventanilla del municipio si piden algo más)";
+const DOCS_LICENCIA_TEXTO =
+  "Contrato de arrendamiento firmado\nINE de la propietaria\nTu INE y tu comprobante de domicilio\n3 fotos del local: frente y los dos costados, donde se vean los vecinos\nFormato de pago de licencia del municipio (link abajo)";
+
 const AJUSTES_INICIALES = {
   arrendador: "Sandra Velasco",
   telefono: "",
@@ -64,12 +80,7 @@ const AJUSTES_INICIALES = {
   recargo: 0,
   interesPagare: "",
   mesesContrato: 12,
-  docsLicencia:
-    "Copia del contrato de arrendamiento firmado\n" +
-    "Copia de identificación de la arrendadora\n" +
-    "Copia del último recibo de predial del inmueble\n" +
-    "Dirección completa y número del local\n" +
-    "(Confirma en ventanilla del municipio si piden algo más)",
+  docsLicencia: DOCS_LICENCIA_TEXTO,
 };
 
 const TEXTO_REQUISITOS =

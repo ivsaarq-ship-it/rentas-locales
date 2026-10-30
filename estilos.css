@@ -120,6 +120,16 @@ nav .marca{display:none}
 .hoja-cab button{border:0;background:var(--cielo2);color:var(--mor);border-radius:50%;width:40px;height:40px;cursor:pointer;display:grid;place-items:center}
 .pago{margin-top:8px}
 
+/* Plazas desplegables */
+.plaza-d{padding:0;overflow:hidden}
+.plaza-cab{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:60px;padding:10px 16px;background:#EEE8F8;cursor:pointer}
+.plaza-cab::-webkit-details-marker{display:none}
+.plaza-cab b{display:block;font-size:17px;font-weight:800;color:var(--mor)}
+.plaza-cab small{display:block;font-size:13px;color:var(--gris3);margin-top:2px}
+.plaza-cab svg.i{color:var(--mor);transition:transform .2s}
+.plaza-d[open] .plaza-cab svg.i{transform:rotate(90deg)}
+.plaza-d .fila{margin:0 16px}
+
 /* Laptop y tableta grande: menú a la izquierda */
 @media (min-width:900px){
   body{padding-bottom:0;padding-left:250px}

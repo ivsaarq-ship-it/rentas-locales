@@ -1,5 +1,5 @@
 // Guarda la app para que abra sin internet.
-const CACHE = "rentas-v2";
+const CACHE = "rentas-v3";
 const ARCHIVOS = ["./", "index.html", "estilos.css", "datos.js", "app.js", "manifest.webmanifest", "icono.svg", "icono-192.png", "lib/fuentes/caprasimo-latin-400-normal.woff2", "lib/fuentes/figtree-latin-400-normal.woff2", "lib/fuentes/figtree-latin-700-normal.woff2",
   "lib/jspdf.umd.min.js"];
 self.addEventListener("install", e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(ARCHIVOS)).then(() => self.skipWaiting())));
