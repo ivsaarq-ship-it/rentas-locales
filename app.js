@@ -1443,7 +1443,14 @@ function vCalendario(arg) {
   const hoyMes = mesActual();
   const celda = (l, m) => {
     const c = contratoDeMes(l, m);
-    if (!c) return l.estado === "vacio" || l.estado === "venta" ? `<td class="cal-vac" title="${esc(nombreLocal(l))}">${l.estado === "venta" ? "En venta" : "Vacío"}</td>` : `<td></td>`;
+    // Celda libre: tocarla lleva a rentar el local (vacío) o a capturar al inquilino actual (rentado sin datos).
+    if (!c) {
+      if (l.estado === "vacio" || l.estado === "venta")
+        return `<td class="cal-vac"><a class="cal-add" href="#/rentar/${l.id}" aria-label="Rentar ${esc(nombreLocal(l))}">${m === hoyMes ? "+ Rentar" : l.estado === "venta" ? "En venta" : "Vacío"}</a></td>`;
+      if (l.estado === "rentado")
+        return `<td class="cal-sin"><a class="cal-add" href="#/rentar/${l.id}?existente=1" aria-label="Capturar inquilino de ${esc(nombreLocal(l))}">${m === hoyMes ? "+ Capturar" : ""}</a></td>`;
+      return `<td></td>`;
+    }
     const x = cargo(c, m);
     const tono = { Pagado: "ok", Atrasado: "mal", Parcial: "ojo", Pendiente: "pend" }[x.estado];
     const etiqueta = { Pagado: "Pagó", Atrasado: "Debe", Parcial: "Parcial", Pendiente: "Pendiente" }[x.estado];
@@ -1454,22 +1461,25 @@ function vCalendario(arg) {
   const filas = E.plazas.filter(p => filtroCal === "todas" || p.id === filtroCal).map(p => {
     const ls = E.locales.filter(l => l.plazaId === p.id);
     if (!ls.length) return "";
-    return `<tr class="grupo"><th colspan="${meses.length + 1}">${esc(p.nombre)}</th></tr>` + ls.map(l => {
+    return `<tr class="grupo"><th colspan="${meses.length + 1}"><span>${esc(p.nombre)}</span></th></tr>` + ls.map(l => {
       const c = contratoActivo(l.id);
       const sub = c ? c.inquilino.nombre : estadoLocal(l)[0];
-      return `<tr><th><b>${esc(l.numero)}</b><small>${esc(sub)}</small></th>${meses.map(m => celda(l, m)).join("")}</tr>`;
+      return `<tr><th><a href="#/local/${l.id}"><b>${esc(l.numero)}</b><small>${esc(sub)}</small></a></th>${meses.map(m => celda(l, m)).join("")}</tr>`;
     }).join("");
   }).join("");
   const mesNombre = m => MESES[Number(m.slice(5)) - 1].slice(0, 3) + " " + m.slice(2, 4);
   pantalla("Calendario", nombreMes(meses[0]) + " a " + nombreMes(meses[11]), `
     <div class="mesnav"><a href="#/calendario/${sumarMeses(base, -1)}" aria-label="Mes anterior"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></a><a href="#/calendario" style="width:auto;padding:0 14px;font-size:14px;font-weight:700">Hoy</a><a href="#/calendario/${sumarMeses(base, 1)}" aria-label="Mes siguiente">${ic("flecha")}</a></div>
     <div class="filtros">${[["todas", "Todas"], ...E.plazas.map(p => [p.id, p.nombre])].map(([k, t]) => `<button class="${filtroCal === k ? "on" : ""}" onclick="filtroCal='${k}';render()">${esc(t)}</button>`).join("")}</div>
-    <div class="cal-leyenda"><span class="bar ok">Pagó</span><span class="bar ojo">Parcial</span><span class="bar pend">Pendiente</span><span class="bar mal">Debe</span><span class="cal-vac">Vacío</span></div>
+    <div class="cal-leyenda"><span class="bar ok">Pagó</span><span class="bar ojo">Parcial</span><span class="bar pend">Pendiente</span><span class="bar mal">Debe</span><span class="cal-vac">Vacío</span><span class="cal-sin">Sin datos</span></div>
     <div class="calwrap"><table class="cal">
       <thead><tr><th>Local</th>${meses.map(m => `<th class="${m === hoyMes ? "hoy" : ""}">${mesNombre(m)}</th>`).join("")}</tr></thead>
       <tbody>${filas || '<tr><td class="vacio">Nada que mostrar</td></tr>'}</tbody>
     </table></div>
-    <p class="sub" style="font-weight:400">Toca una barra para ver el pago de ese mes. Las barras muestran el tiempo que dura cada contrato.</p>`, "#/mas");
+    <p class="sub" style="font-weight:400">Toca una barra para ver el pago de ese mes. En un local vacío, toca «+ Rentar» para darlo de alta; en uno sin datos, «+ Capturar».</p>`, "#/mas");
+  // Abre mostrando el mes actual junto a la columna de locales
+  const caja = $(".calwrap"), hoyTh = caja && caja.querySelector("th.hoy");
+  if (hoyTh) caja.scrollLeft += hoyTh.getBoundingClientRect().left - caja.querySelector("th").getBoundingClientRect().right;
 }
 
 /* ================= Rutas ================= */
