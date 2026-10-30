@@ -629,6 +629,7 @@ function vPagos(mes) {
       return `<div class="fila" onclick="detalleCargo('${c.id}','${mes}')"><div><b>${esc(c.inquilino.nombre)} · ${esc(l.numero)}</b><small>${esc(plaza(l.plazaId).nombre)} · ${sub}</small></div>${chip([x.estado, x.estado === "Pagado" ? "v" : x.estado === "Atrasado" ? "r" : "a"])}</div>`;
     }).join("") : `<div class="vacio">${filtroPagos === "cobrar" ? "Nada por cobrar" : "Aún no hay pagos"}</div>`}</div>
     ${atr.length ? `<button class="btn wa" onclick="recordarTodos('${mes}')">${ic("wa")}${atr.length === 1 ? "Recordar al atrasado" : `Recordar a los ${atr.length} atrasados`}</button>` : ""}
+    <a class="btn sec" href="#/calendario">${ic("cal")}Ver calendario de locales</a>
     <a class="btn sec" href="#/banco">${ic("banco")}Revisar con estado de cuenta</a>
   `);
 }
@@ -1199,6 +1200,7 @@ function vMas() {
   pantalla("Más", "", `<div class="card menu">
     <a class="fila" href="#/gastos"><div>${ic("gasto")}Gastos<small>Predial, agua, mantenimiento</small></div>${ic("flecha")}</a>
     <a class="fila" href="#/reporte"><div>${ic("gasto")}Reporte para el contador<small>Ingresos, gastos y ganancia</small></div>${ic("flecha")}</a>
+    <a class="fila" href="#/calendario"><div>${ic("cal")}Calendario de locales<small>Quién paga y cuándo, por mes</small></div>${ic("flecha")}</a>
     <a class="fila" href="#/banco"><div>${ic("banco")}Revisar con el banco<small>Sube tu estado de cuenta</small></div>${ic("flecha")}</a>
     <a class="fila" onclick="exportarCalendario()"><div>${ic("cal")}Recordatorios en mi calendario<small>Rentas, renovaciones y licencias</small></div>${ic("flecha")}</a>
     <a class="fila" href="#/drive"><div>${ic("respaldo")}Google Drive<small>${driveActivo() ? "Conectado: se guarda solo" : "Respaldo automático y usar en varios aparatos"}</small></div>${ic("flecha")}</a>
@@ -1429,6 +1431,47 @@ function vDrive() {
     <a class="btn sec" href="#/respaldo">Respaldo manual en archivo</a>`, "#/mas");
 }
 
+/* ================= Calendario por locales (estilo multi-calendario) ================= */
+let filtroCal = "todas";
+// Contrato que cubre un mes (de la primera renta a su último mes).
+function contratoDeMes(l, m) {
+  return E.contratos.find(c => c.localId === l.id && m >= (c.cobrarDesde || c.inicio.slice(0, 7)) && m <= finContrato(c.inicio, c.meses).slice(0, 7));
+}
+function vCalendario(arg) {
+  const base = /^\d{4}-\d{2}$/.test(arg || "") ? arg : sumarMeses(mesActual(), -2);
+  const meses = Array.from({ length: 12 }, (_, i) => sumarMeses(base, i));
+  const hoyMes = mesActual();
+  const celda = (l, m) => {
+    const c = contratoDeMes(l, m);
+    if (!c) return l.estado === "vacio" || l.estado === "venta" ? `<td class="cal-vac" title="${esc(nombreLocal(l))}">${l.estado === "venta" ? "En venta" : "Vacío"}</td>` : `<td></td>`;
+    const x = cargo(c, m);
+    const tono = { Pagado: "ok", Atrasado: "mal", Parcial: "ojo", Pendiente: "pend" }[x.estado];
+    const etiqueta = { Pagado: "Pagó", Atrasado: "Debe", Parcial: "Parcial", Pendiente: "Pendiente" }[x.estado];
+    const ini = m === (c.cobrarDesde || c.inicio.slice(0, 7)) ? " ini" : "";
+    const fin = m === finContrato(c.inicio, c.meses).slice(0, 7) ? " fin" : "";
+    return `<td class="cal-c"><span class="bar ${tono}${ini}${fin}" role="button" tabindex="0" onclick="detalleCargo('${c.id}','${m}')" title="${esc(c.inquilino.nombre)} · ${esc(etiqueta)}">${etiqueta}</span></td>`;
+  };
+  const filas = E.plazas.filter(p => filtroCal === "todas" || p.id === filtroCal).map(p => {
+    const ls = E.locales.filter(l => l.plazaId === p.id);
+    if (!ls.length) return "";
+    return `<tr class="grupo"><th colspan="${meses.length + 1}">${esc(p.nombre)}</th></tr>` + ls.map(l => {
+      const c = contratoActivo(l.id);
+      const sub = c ? c.inquilino.nombre : estadoLocal(l)[0];
+      return `<tr><th><b>${esc(l.numero)}</b><small>${esc(sub)}</small></th>${meses.map(m => celda(l, m)).join("")}</tr>`;
+    }).join("");
+  }).join("");
+  const mesNombre = m => MESES[Number(m.slice(5)) - 1].slice(0, 3) + " " + m.slice(2, 4);
+  pantalla("Calendario", nombreMes(meses[0]) + " a " + nombreMes(meses[11]), `
+    <div class="mesnav"><a href="#/calendario/${sumarMeses(base, -1)}" aria-label="Mes anterior"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></a><a href="#/calendario" style="width:auto;padding:0 14px;font-size:14px;font-weight:700">Hoy</a><a href="#/calendario/${sumarMeses(base, 1)}" aria-label="Mes siguiente">${ic("flecha")}</a></div>
+    <div class="filtros">${[["todas", "Todas"], ...E.plazas.map(p => [p.id, p.nombre])].map(([k, t]) => `<button class="${filtroCal === k ? "on" : ""}" onclick="filtroCal='${k}';render()">${esc(t)}</button>`).join("")}</div>
+    <div class="cal-leyenda"><span class="bar ok">Pagó</span><span class="bar ojo">Parcial</span><span class="bar pend">Pendiente</span><span class="bar mal">Debe</span><span class="cal-vac">Vacío</span></div>
+    <div class="calwrap"><table class="cal">
+      <thead><tr><th>Local</th>${meses.map(m => `<th class="${m === hoyMes ? "hoy" : ""}">${mesNombre(m)}</th>`).join("")}</tr></thead>
+      <tbody>${filas || '<tr><td class="vacio">Nada que mostrar</td></tr>'}</tbody>
+    </table></div>
+    <p class="sub" style="font-weight:400">Toca una barra para ver el pago de ese mes. Las barras muestran el tiempo que dura cada contrato.</p>`, "#/mas");
+}
+
 /* ================= Rutas ================= */
 function render() {
   const [ruta, arg] = location.hash.replace(/^#\/?/, "").split("?")[0].split("/");
@@ -1436,10 +1479,10 @@ function render() {
   const vistas = {
     inicio: vInicio, locales: () => vLocales(false), vacios: () => vLocales(true), local: () => vLocal(arg),
     pagos: () => vPagos(arg), rentar: () => vRentar(arg, q.has("existente")), gastos: vGastos, reporte: () => vReporte(arg),
-    banco: vBanco, respaldo: vRespaldo, drive: vDrive, mas: vMas, ajustes: vAjustes, plazas: vPlazas,
+    banco: vBanco, respaldo: vRespaldo, drive: vDrive, calendario: () => vCalendario(arg), mas: vMas, ajustes: vAjustes, plazas: vPlazas,
   };
   (vistas[ruta] || vInicio)();
-  const tab = { local: "locales", vacios: "inicio", rentar: "locales", gastos: "mas", reporte: "mas", banco: "mas", respaldo: "mas", drive: "mas", ajustes: "mas", plazas: "mas" }[ruta] || ruta || "inicio";
+  const tab = { local: "locales", vacios: "inicio", rentar: "locales", gastos: "mas", reporte: "mas", banco: "mas", respaldo: "mas", drive: "mas", calendario: "pagos", ajustes: "mas", plazas: "mas" }[ruta] || ruta || "inicio";
   document.querySelectorAll("nav a").forEach(a => a.classList.toggle("on", a.dataset.t === tab));
 }
 let rutaAnterior = "";

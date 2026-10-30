@@ -144,3 +144,28 @@ nav .marca{display:none}
   #velo{align-items:center}
   #hoja{border-radius:24px;max-height:85vh}
 }
+
+/* Calendario por locales */
+.cal-leyenda{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 10px;font-size:13px;color:var(--gris3)}
+.cal-leyenda .bar{padding:3px 10px;border-radius:12px;font-size:12px}
+.calwrap{overflow-x:auto;background:#fff;border:1px solid var(--borde);border-radius:18px;-webkit-overflow-scrolling:touch}
+.cal{border-collapse:separate;border-spacing:0;font-size:13px}
+.cal th,.cal td{border-bottom:1px solid var(--linea);border-right:1px solid var(--linea);height:52px;min-width:84px;padding:0;text-align:center;white-space:nowrap}
+.cal thead th{position:sticky;top:0;z-index:3;background:var(--cielo2);color:var(--txt);font-weight:700;height:40px}
+.cal thead th.hoy{background:var(--mor);color:#fff}
+.cal tbody th:first-child,.cal thead th:first-child{position:sticky;left:0;z-index:2;background:#fff;min-width:150px;text-align:left;padding:6px 10px}
+.cal thead th:first-child{z-index:4;background:var(--cielo)}
+.cal th b{display:block;font-size:14px}
+.cal th small{display:block;font-size:12px;color:var(--gris);font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px}
+.cal tr.grupo th{background:#EEE8F8;color:var(--mor);font-weight:800;text-align:left;height:34px;position:sticky;left:0}
+.cal-c{padding:4px 0}
+.bar{display:block;height:100%;min-height:36px;line-height:36px;color:#fff;font-weight:700;font-size:12px;cursor:pointer;border-radius:0}
+.bar.ok{background:#2E8B57}
+.bar.mal{background:#B3261E}
+.bar.ojo{background:#E0A100;color:#2A2333}
+.bar.pend{background:#8E86A6}
+.cal-c .bar{margin:0}
+.cal-c .bar.ini{border-radius:12px 0 0 12px;margin-left:6px}
+.cal-c .bar.fin{border-radius:0 12px 12px 0;margin-right:6px}
+.cal-c .bar.ini.fin{border-radius:12px;margin:0 6px}
+.cal-vac{background:repeating-linear-gradient(45deg,#f4f1f8,#f4f1f8 6px,#fff 6px,#fff 12px);color:var(--gris);font-size:12px}
