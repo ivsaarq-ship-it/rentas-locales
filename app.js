@@ -787,6 +787,8 @@ function cargarOCR() {
   return (ocrListo = new Promise((ok, mal) => {
     const s = document.createElement("script");
     s.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";
+    s.integrity = "sha384-GJqSu7vueQ9qN0E9yLPb3Wtpd7OrgK8KmYzC8T1IysG1bcvxvIO4qtYR/D3A991F";
+    s.crossOrigin = "anonymous";
     s.onload = ok; s.onerror = () => { ocrListo = null; mal(new Error("Sin internet")); };
     document.head.appendChild(s);
   }));
@@ -1174,7 +1176,8 @@ function restaurar() {
   i.onchange = async () => {
     try {
       const r = JSON.parse(await i.files[0].text());
-      if (r.app !== "rentas-sandra") throw new Error("Ese archivo no es un respaldo de esta app");
+      if (r.app !== "rentas-sandra" || !r.estado || !Array.isArray(r.estado.locales) || !Array.isArray(r.estado.contratos) || !Array.isArray(r.estado.pagos) || !r.estado.ajustes)
+        throw new Error("Ese archivo no es un respaldo válido de esta app");
       if (!confirm(`¿Reemplazar todo con el respaldo del ${fechaBonita(r.fecha)}?`)) return;
       await tx("fotos", "readwrite", s => s.clear());
       for (const [id, url] of Object.entries(r.fotos || {})) await ponerFoto(id, await (await fetch(url)).blob());
@@ -1239,13 +1242,13 @@ function vAjustes() {
     <form id="fa" class="card">
     <label>Nombre de la arrendadora<input name="arrendador" value="${esc(a.arrendador)}"></label>
     <label>Ciudad donde se firman contratos<input name="ciudadFirma" value="${esc(a.ciudadFirma)}"></label>
-    <label>Días de gracia (hábiles)<input name="gracia" type="number" inputmode="numeric" value="${a.gracia}"></label>
-    <label>Recargo por pago tardío ($, 0 = sin recargo)<input name="recargo" type="number" inputmode="decimal" value="${a.recargo}"></label>
-    <label>Avisar renovación con (días antes)<input name="avisoRenovacion" type="number" inputmode="numeric" value="${a.avisoRenovacion}"></label>
-    <label>Revisar luz si no hay pago en (días)<input name="diasLuz" type="number" inputmode="numeric" value="${a.diasLuz}"></label>
-    <label>Inflación anual para aumento (%, dato de INEGI)<input name="inflacion" type="number" inputmode="decimal" step="any" value="${a.inflacion}"></label>
-    <label>Duración normal del contrato (meses)<input name="mesesContrato" type="number" inputmode="numeric" value="${a.mesesContrato}"></label>
-    <label>Interés moratorio en pagarés (% mensual, vacío = sin interés)<input name="interesPagare" type="number" inputmode="decimal" step="any" value="${a.interesPagare}"></label>
+    <label>Días de gracia (hábiles)<input name="gracia" type="number" inputmode="numeric" value="${esc(a.gracia)}"></label>
+    <label>Recargo por pago tardío ($, 0 = sin recargo)<input name="recargo" type="number" inputmode="decimal" value="${esc(a.recargo)}"></label>
+    <label>Avisar renovación con (días antes)<input name="avisoRenovacion" type="number" inputmode="numeric" value="${esc(a.avisoRenovacion)}"></label>
+    <label>Revisar luz si no hay pago en (días)<input name="diasLuz" type="number" inputmode="numeric" value="${esc(a.diasLuz)}"></label>
+    <label>Inflación anual para aumento (%, dato de INEGI)<input name="inflacion" type="number" inputmode="decimal" step="any" value="${esc(a.inflacion)}"></label>
+    <label>Duración normal del contrato (meses)<input name="mesesContrato" type="number" inputmode="numeric" value="${esc(a.mesesContrato)}"></label>
+    <label>Interés moratorio en pagarés (% mensual, vacío = sin interés)<input name="interesPagare" type="number" inputmode="decimal" step="any" value="${esc(a.interesPagare)}"></label>
     <label>Mensaje de requisitos (WhatsApp)<textarea name="textoRequisitos" rows="6">${esc(a.textoRequisitos)}</textarea></label>
     <label>Documentos para licencia de giro (uno por renglón)<textarea name="docsLicencia" rows="5">${esc(a.docsLicencia)}</textarea></label>
     <label>Contrato modelo <small>Campos: {INQUILINO} {FIADOR} {LOCAL} {DIRECCION} {GIRO} {RENTA} {RENTA_LETRA} {DEPOSITO} {DIA_PAGO} {INICIO} {FIN} {MESES}…</small><textarea name="plantillaContrato" rows="10">${esc(a.plantillaContrato)}</textarea></label>
