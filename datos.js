@@ -1,7 +1,7 @@
 // Datos iniciales y plantillas. Lo que Sandra cambie se guarda en su celular, no aquí.
 
 // Conexión con Google Drive (respaldo automático y sincronizar aparatos). Se llena con el ID de cliente de Google de Sergio.
-const GOOGLE_CLIENT_ID = "";
+const GOOGLE_CLIENT_ID = "623553187-6fbdpsp6jqio2h7639os0mk7k3qib3vg.apps.googleusercontent.com";
 
 // Oficinas de Padrón y Licencias. Datos públicos de cada municipio (oct 2026); confirmar por teléfono antes de ir.
 const MUNICIPIOS_INICIALES = [
