@@ -1415,7 +1415,7 @@ function vDrive() {
   pantalla("Google Drive", "Respaldo automático", `
     <div class="card"><p>Con Drive conectado, <b>cada cambio se guarda solo</b> en tu Google Drive, y puedes usar la app en <b>otro aparato</b> (celular o laptop) con los mismos datos: abre el link ahí y conecta la misma cuenta de Google.</p>
     <div class="dato"><span>Estado</span><b>${esc(estado)}</b></div>
-    <div class="dato"><span>Última vez</span>${hora ? fechaBonita(hora.slice(0, 10)) + " " + hora.slice(11, 16) : "Nunca"}</div>
+    <div class="dato"><span>Última vez</span>${hora ? fechaBonita(iso(new Date(hora))) + " " + new Date(hora).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" }) : "Nunca"}</div>
     ${drive.error ? `<div class="aviso">${esc(drive.error)}</div>` : ""}</div>
     <button class="btn" onclick="${driveActivo() ? "sincronizar(true)" : "conectarDrive()"}" ${driveListo() ? "" : "disabled"}>${ic("respaldo")}${driveActivo() ? "Sincronizar ahora" : "Conectar con Google Drive"}</button>
     <div class="card"><b>Tu carpeta en Drive: «${CARPETA_DRIVE}»</b>
