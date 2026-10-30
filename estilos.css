@@ -55,7 +55,8 @@ h2{font-size:17px;font-weight:800;margin:20px 2px 8px}
 .btn:disabled{opacity:.6}
 .dos{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .tres{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px}
-.dato{display:flex;justify-content:space-between;gap:12px;font-size:15px;padding:6px 0;text-align:right}
+.dato{display:flex;justify-content:space-between;gap:12px;font-size:15px;padding:6px 0;text-align:right;overflow-wrap:anywhere;min-width:0}
+.dato span{flex:none;max-width:45%}
 .dato span{color:var(--gris);text-align:left}
 .cifras{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:8px 0}
 .cifras div{background:var(--fondo);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:2px}
@@ -192,3 +193,10 @@ nav .marca{display:none}
 /* Filtro de plazas del calendario */
 .cal-filtro{display:flex;align-items:center;gap:10px;margin:0 0 10px;font-size:14px;font-weight:700;color:var(--txt)}
 .cal-filtro select{margin:0;flex:1;max-width:320px}
+
+/* WhatsApp junto a cada aviso */
+.al-fila{display:flex;gap:8px;align-items:stretch;margin-bottom:8px}
+.al-fila .al{flex:1;margin:0;min-width:0}
+.al-wa{flex:none;width:52px;border:0;border-radius:16px;background:var(--wa);color:#fff;display:grid;place-items:center;cursor:pointer}
+.boton-dato{width:auto;margin:0;padding:0 16px;min-height:40px;flex:none}
+.aviso a.btn{text-decoration:none}

@@ -228,18 +228,18 @@ function alertas() {
     const c = contratoActivo(l.id);
     if (!c) { sinDatos.push(l.numero); continue; }
     const at = atrasos(c);
-    if (at.length) A.push(["r", `Renta atrasada · ${pesos(at.reduce((s, x) => s + x.saldo, 0))}`, `${n} · ${c.inquilino.nombre} · ${at.length} ${at.length > 1 ? "meses" : "mes"}`, ir]);
+    if (at.length) A.push(["r", `Renta atrasada · ${pesos(at.reduce((s, x) => s + x.saldo, 0))}`, `${n} · ${c.inquilino.nombre} · ${at.length} ${at.length > 1 ? "meses" : "mes"}`, ir, [c.id, "atraso"]]);
     const fin = finContrato(c.inicio, c.meses), dias = diasEntre(hoy, fin);
-    if (dias < 0) A.push(["r", "Contrato vencido", `${n} · venció ${fechaBonita(fin)}`, ir]);
-    else if (dias <= E.ajustes.avisoRenovacion) A.push(["a", `Contrato vence en ${dias} días`, `${n} · renta sugerida ${pesos(rentaSugerida(c))}`, ir]);
-    if (l.licencia !== "Sí") A.push(["r", "Sin licencia de giro", `${n} · ${c.inquilino.nombre}`, ir]);
-    else if (l.licenciaVence && l.licenciaVence < hoy) A.push(["r", "Licencia de giro vencida", n, ir]);
-    else if (l.licenciaVence && diasEntre(hoy, l.licenciaVence) <= 30) A.push(["a", "Licencia de giro por vencer", `${n} · ${fechaBonita(l.licenciaVence)}`, ir]);
-    if (!l.luz) A.push(["a", "Luz: falta confirmar pago", n, ir]);
-    else if (diasEntre(l.luz, hoy) > E.ajustes.diasLuz) A.push(["a", "Luz: revisar pago", `${n} · último ${fechaBonita(l.luz)}`, ir]);
+    if (dias < 0) A.push(["r", "Contrato vencido", `${n} · venció ${fechaBonita(fin)}`, ir, [c.id, "renovar"]]);
+    else if (dias <= E.ajustes.avisoRenovacion) A.push(["a", `Contrato vence en ${dias} días`, `${n} · renta sugerida ${pesos(rentaSugerida(c))}`, ir, [c.id, "renovar"]]);
+    if (l.licencia !== "Sí") A.push(["r", "Sin licencia de giro", `${n} · ${c.inquilino.nombre}`, ir, [c.id, "licencia"]]);
+    else if (l.licenciaVence && l.licenciaVence < hoy) A.push(["r", "Licencia de giro vencida", n, ir, [c.id, "licencia"]]);
+    else if (l.licenciaVence && diasEntre(hoy, l.licenciaVence) <= 30) A.push(["a", "Licencia de giro por vencer", `${n} · ${fechaBonita(l.licenciaVence)}`, ir, [c.id, "licencia"]]);
+    if (!l.luz) A.push(["a", "Luz: falta confirmar pago", n, ir, [c.id, "luz"]]);
+    else if (diasEntre(l.luz, hoy) > E.ajustes.diasLuz) A.push(["a", "Luz: revisar pago", `${n} · último ${fechaBonita(l.luz)}`, ir, [c.id, "luz"]]);
     const f = expedienteFaltan(c);
-    if (f.length) A.push(["a", "Expediente incompleto", `${n} · falta: ${f.map(d => d.nombre.replace(/ del (inquilino|fiador)/, "")).slice(0, 2).join(", ")}${f.length > 2 ? "…" : ""}`, ir]);
-    if (ineVencida(c)) A.push(["r", "INE vencida", n, ir]);
+    if (f.length) A.push(["a", "Expediente incompleto", `${n} · falta: ${f.map(d => d.nombre.replace(/ del (inquilino|fiador)/, "")).slice(0, 2).join(", ")}${f.length > 2 ? "…" : ""}`, ir, docsQuePide(c).length ? [c.id, "documentos"] : null]);
+    if (ineVencida(c)) A.push(["r", "INE vencida", n, ir, [c.id, "ine"]]);
   }
   for (const g of E.gastos) {
     if (g.pagado || !g.vence) continue;
@@ -257,7 +257,7 @@ function alertas() {
   else if (!driveConectado() && (!E.ultimoRespaldo || diasEntre(E.ultimoRespaldo, hoy) > 7)) A.push(["a", "Haz tu respaldo semanal", E.ultimoRespaldo ? "Último: " + fechaBonita(E.ultimoRespaldo) : "Aún no tienes respaldo", "#/respaldo"]);
   A.sort((a, b) => (a[0] === b[0] ? 0 : a[0] === "r" ? -1 : 1));
   // El aviso de Drive siempre arriba
-  const i = A.findIndex(x => /Google Drive/.test(x[1]));
+  const i = A.findIndex(x => /Drive/.test(x[1]));
   if (i > 0) A.unshift(A.splice(i, 1)[0]);
   return A;
 }
@@ -410,6 +410,51 @@ function reciboWA(pid) {
   const p = E.pagos.find(x => x.id === pid), c = E.contratos.find(x => x.id === p.contratoId);
   whatsapp(c.inquilino.tel, textoRecibo(p));
 }
+// Documentos que el inquilino puede mandar (lo demás lo hace Sandra).
+const docsQuePide = c => expedienteFaltan(c).filter(d => d.id !== "licencia");
+function mensajeAviso(cid, tipo) {
+  const c = E.contratos.find(x => x.id === cid), l = local(c.localId);
+  const hola = `Hola ${c.inquilino.nombre.split(" ")[0]}`, loc = `del local ${l.numero} (${plaza(l.plazaId).nombre})`;
+  const fin = finContrato(c.inicio, c.meses);
+  switch (tipo) {
+    case "atraso": {
+      const at = atrasos(c), total = at.reduce((s, x) => s + x.saldo, 0);
+      return `${hola}, te recuerdo que tienes pendiente la renta ${loc}: ${at.map(x => nombreMes(x.mes)).join(", ")} (${pesos(total)}). ¿Me confirmas tu pago, por favor? Gracias.`;
+    }
+    case "renovar":
+      return diasEntre(hoyISO(), fin) < 0
+        ? `${hola}, tu contrato ${loc} venció el ${fechaBonita(fin)}. Necesitamos firmar la renovación; ¿cuándo podemos vernos? Gracias.`
+        : `${hola}, tu contrato ${loc} vence el ${fechaBonita(fin)}. ¿Te interesa renovar? Platiquemos las condiciones del nuevo periodo. Gracias.`;
+    case "licencia":
+      return l.licencia === "Sí" && l.licenciaVence
+        ? `${hola}, tu licencia de giro ${loc} ${l.licenciaVence < hoyISO() ? "venció" : "vence"} el ${fechaBonita(l.licenciaVence)}. ¿Me mandas foto de la renovación cuando la tengas, por favor? Gracias.`
+        : `${hola}, ¿cómo vas con la licencia de giro ${loc}? Cuando la tengas, mándame una foto por aquí, por favor. Gracias.`;
+    case "luz":
+      return `${hola}, ¿me mandas foto del último recibo de luz pagado ${loc}, por favor? Gracias.`;
+    case "documentos":
+      return `${hola}, para completar tu expediente ${loc} me falta:\n${docsQuePide(c).map(d => "• " + d.nombre).join("\n")}\n¿Me lo mandas por aquí, por favor? Gracias.`;
+    case "ine":
+      return `${hola}, en tu expediente ${loc} aparece una INE vencida (tuya o de tu fiador). ¿Me mandas foto de la INE vigente, por favor? Gracias.`;
+    default:
+      return `${hola}, `;
+  }
+}
+function avisoWA(cid, tipo) {
+  const c = E.contratos.find(x => x.id === cid);
+  whatsapp(c.inquilino.tel, mensajeAviso(cid, tipo));
+}
+// Menú de mensajes listos desde la ficha del local.
+function mensajesWA(cid) {
+  const c = E.contratos.find(x => x.id === cid), l = local(c.localId);
+  const ops = [];
+  if (atrasos(c).length) ops.push(["atraso", "Recordar renta pendiente"]);
+  ops.push(["luz", "Pedir recibo de luz"], ["licencia", "Preguntar por su licencia de giro"]);
+  if (docsQuePide(c).length) ops.push(["documentos", "Pedir documentos que faltan"]);
+  if (ineVencida(c)) ops.push(["ine", "Pedir INE vigente"]);
+  ops.push(["renovar", "Avisar renovación de contrato"], ["libre", "Mensaje libre"]);
+  hoja(`<p class="sub">Se abre WhatsApp con el mensaje listo; lo puedes cambiar antes de enviar.</p>` +
+    ops.map(([t, txt]) => `<button class="btn wa" onclick="avisoWA('${cid}','${t}')">${ic("wa")}${txt}</button>`).join(""), "Mensaje a " + c.inquilino.nombre);
+}
 function recordatorioWA(cid, mes) {
   const c = E.contratos.find(x => x.id === cid), x = cargo(c, mes), l = local(c.localId);
   whatsapp(c.inquilino.tel, `Hola ${c.inquilino.nombre.split(" ")[0]}, te recuerdo que la renta de ${nombreMes(mes)} del local ${l.numero} (${pesos(x.saldo)}) venció el ${fechaBonita(x.fecha)}. ¿Me confirmas tu pago, por favor? Gracias.`);
@@ -472,7 +517,10 @@ function vInicio() {
     <div class="dos"><a class="btn" href="#/pagos/${mes}">${ic("pago")}Registrar pago</a><a class="btn sec" href="#/vacios">${ic("mas")}Nuevo inquilino</a></div>
     ${guiaArranque()}
     <h2>Hoy hay que ver ${A.length ? "(" + A.length + ")" : ""}</h2>
-    ${A.length ? A.map(([t, tit, det, ir]) => `<a class="al ${t}" href="${ir}"><span class="ic">${ic(iconoAlerta(tit))}</span><div>${esc(tit)}<em>${esc(det)}</em></div>${ic("flecha")}</a>`).join("") : '<div class="card vacio">Todo en orden</div>'}
+    ${A.length ? A.map(([t, tit, det, ir, wa]) => {
+      const aviso = `<a class="al ${t}" href="${ir}"><span class="ic">${ic(iconoAlerta(tit))}</span><div>${esc(tit)}<em>${esc(det)}</em></div>${ic("flecha")}</a>`;
+      return wa ? `<div class="al-fila">${aviso}<button class="al-wa" onclick="avisoWA('${wa[0]}','${wa[1]}')" aria-label="Avisar por WhatsApp: ${esc(tit)}">${ic("wa")}</button></div>` : aviso;
+    }).join("") : '<div class="card vacio">Todo en orden</div>'}
   `);
 }
 
@@ -561,7 +609,7 @@ function vLocal(id) {
       ${c.inquilino.correo ? `<div class="dato"><span>Correo</span>${esc(c.inquilino.correo)}</div>` : ""}
       ${c.inquilino.rfc ? `<div class="dato"><span>RFC</span>${esc(c.inquilino.rfc)} · ${esc(c.inquilino.tipo)}</div>` : ""}
       <div class="dato"><span>Contrato</span>${fechaBonita(c.inicio)} a ${fechaBonita(fin)}</div>
-      <div class="dos"><button class="btn" onclick="registrarPago('${c.id}')">Registrar pago</button><button class="btn wa" onclick="whatsapp('${esc(c.inquilino.tel)}','')">${ic("wa")}WhatsApp</button></div>
+      <div class="dos"><button class="btn" onclick="registrarPago('${c.id}')">Registrar pago</button><button class="btn wa" onclick="mensajesWA('${c.id}')">${ic("wa")}WhatsApp</button></div>
       <button class="btn sec chico" onclick="editarContrato('${c.id}')">Editar datos del inquilino</button></div>`;
 
     // Avisos rápidos
@@ -645,7 +693,7 @@ function vPagos(mes) {
     <div class="mesnav"><a href="#/pagos/${sumarMeses(mes, -1)}" aria-label="Mes anterior"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></a><b>${nombreMes(mes)}</b><a href="#/pagos/${sumarMeses(mes, 1)}" aria-label="Mes siguiente">${ic("flecha")}</a></div>
     <div class="kpi"><div class="dato" style="padding:0"><span>Cobrado</span><span>Falta</span></div><div class="dato" style="padding:0"><b style="font-size:24px">${pesos(cobrado)}</b><b class="${total - cobrado ? "rojo" : ""}" style="font-size:20px">${pesos(total - cobrado)}</b></div><div class="barra"><i style="width:${total ? Math.round((cobrado / total) * 100) : 0}%"></i></div></div>
     <div class="filtros"><button class="${filtroPagos === "cobrar" ? "on" : ""}" onclick="filtroPagos='cobrar';render()">Por cobrar (${porCobrar.length})</button><button class="${filtroPagos === "pagados" ? "on" : ""}" onclick="filtroPagos='pagados';render()">Pagados (${pagados.length})</button></div>
-    ${sinDatos ? `<div class="card aviso">${sinDatos} locales rentados aún sin datos del inquilino; no aparecen aquí. <a href="#/locales">Capturarlos</a></div>` : ""}
+    ${sinDatos ? `<div class="card aviso">${sinDatos} locales rentados aún sin datos del inquilino; no aparecen aquí.<a class="btn sec chico" href="#/locales">Capturarlos</a></div>` : ""}
     <div class="card">${cs.length ? cs.map(x => {
       const c = x.contrato, l = local(c.localId);
       const sub = x.estado === "Pagado" ? "Pagó " + fechaBonita(x.pagos[x.pagos.length - 1].fecha) : x.pagado ? `Pagó ${pesos(x.pagado)} de ${pesos(x.total)}` : `${pesos(x.total)} · gracia hasta ${fechaBonita(x.limite)}`;
@@ -993,11 +1041,11 @@ function docsLicencia(cid) {
   envio.cid = cid;
   hoja(`<div class="card">
       ${listo(true, "Contrato de arrendamiento (se hace solo)")}
-      ${listo(ine.length, "INE de la propietaria", `<a class="chip c-a" href="#/ajustes">Subir</a>`)}
+      ${listo(ine.length, "INE de la propietaria", `<a class="btn sec chico boton-dato" href="#/ajustes">Subir</a>`)}
       ${listo(ineInq.length, "INE del inquilino")}
       ${listo(compInq.length, "Comprobante de domicilio del inquilino")}
       ${listo(fl.length >= 3, `3 fotos del local (${Math.min(fl.length, 3)} de 3)`)}
-      ${listo(!!m, m ? "Datos de " + m.nombre : "Municipio de la plaza", `<a class="chip c-a" href="#/plazas">Elegir</a>`)}
+      ${listo(!!m, m ? "Datos de " + m.nombre : "Municipio de la plaza", `<a class="btn sec chico boton-dato" href="#/plazas">Elegir</a>`)}
     </div>
     ${m ? `<div class="card"><b>${esc(m.nombre)} · Padrón y Licencias</b><p class="sub" style="font-weight:400">${esc(m.oficina)}</p>
       <div class="dato"><span>Teléfono</span><a href="tel:${esc(m.telefono.replace(/\(.*\)/, "").replace(/\s/g, ""))}">${esc(m.telefono)}</a></div>
