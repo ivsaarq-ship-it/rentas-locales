@@ -37,9 +37,9 @@ async function leerFoto(id) {
   const b = await leerFotoLocal(id);
   if (b || !drive.token) return b;
   try {
-    const f = (await driveArchivos())[id + ".jpg"];
-    if (!f) return undefined;
-    const r = await driveFetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`);
+    const fid = (E.driveFotos || {})[id];
+    if (!fid) return undefined;
+    const r = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fid}?alt=media`);
     const blob = await r.blob();
     await ponerFoto(id, blob);
     return blob;
@@ -71,6 +71,7 @@ function migrar(e) {
   if (!a.docsLicencia || a.docsLicencia === DOCS_LICENCIA_ANTERIOR) a.docsLicencia = DOCS_LICENCIA_TEXTO;
   for (const p of e.plazas) if (p.municipio === undefined) p.municipio = (PLAZAS_INICIALES.find(x => x.id === p.id) || {}).municipio || "";
   for (const l of e.locales) if (!l.fotosLicencia) l.fotosLicencia = [];
+  if (!e.driveFotos) e.driveFotos = {};
   return e;
 }
 
@@ -1261,8 +1262,11 @@ function vAjustes() {
 
 /* ================= Google Drive: respaldo automático y mismos datos en varios aparatos ================= */
 // Todo queda en una carpeta del Drive de quien conecta; la app solo ve los archivos que ella misma creó.
-const CARPETA_DRIVE = "Rentas (respaldo de la app)";
-const drive = { token: "", vence: 0, carpeta: "", archivos: null, timer: 0, ocupado: false, error: "" };
+// Carpetas que la app crea en el Drive de quien conecta. Con el permiso "drive.file" la app solo ve
+// lo que ella misma creó: no puede leer, cambiar ni borrar ningún otro archivo del Drive. Nunca borra nada.
+const CARPETA_DRIVE = "Rentas Sandra";
+const SUB = { respaldo: "0 Respaldo de la app", locales: "1 Locales", pagos: "2 Pagos", propietaria: "3 Propietaria", otras: "9 Otras fotos" };
+const drive = { token: "", vence: 0, carpetas: {}, timer: 0, ocupado: false, error: "" };
 const ls = {
   get: k => { try { return localStorage.getItem(k); } catch (e) { return null; } },
   set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} },
@@ -1282,7 +1286,7 @@ function cargarGoogle() {
 }
 // Pide permiso a Google (necesita un toque de la persona). Después sincroniza.
 async function conectarDrive() {
-  if (!driveListo()) return alert("Falta configurar Google Drive (lo hace Sergio una sola vez).");
+  if (!driveListo()) return alert("Falta configurar Google Drive (se hace una sola vez).");
   try { await cargarGoogle(); } catch (e) { return alert("Necesitas internet para conectar Drive."); }
   const cliente = google.accounts.oauth2.initTokenClient({
     client_id: GOOGLE_CLIENT_ID,
@@ -1303,41 +1307,57 @@ async function driveFetch(url, opciones = {}) {
   if (!r.ok) throw new Error("Drive respondió " + r.status);
   return r;
 }
-async function driveCarpeta() {
-  if (drive.carpeta) return drive.carpeta;
-  const q = encodeURIComponent(`name='${CARPETA_DRIVE}' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
+const comillas = t => String(t).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+const limpiarNombre = t => String(t || "").replace(/[\/\\]/g, "-").trim() || "Sin nombre";
+async function driveBuscar(nombre, padre, carpeta) {
+  const q = encodeURIComponent(`name='${comillas(nombre)}' and '${padre || "root"}' in parents and trashed=false` + (carpeta ? " and mimeType='application/vnd.google-apps.folder'" : ""));
   const r = await (await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)&spaces=drive`)).json();
-  if (r.files && r.files.length) return (drive.carpeta = r.files[0].id);
-  const n = await (await driveFetch("https://www.googleapis.com/drive/v3/files?fields=id", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: CARPETA_DRIVE, mimeType: "application/vnd.google-apps.folder" }),
-  })).json();
-  return (drive.carpeta = n.id);
+  return r.files && r.files.length ? r.files[0].id : "";
 }
-async function driveArchivos(fresco) {
-  if (drive.archivos && !fresco) return drive.archivos;
-  const carpeta = await driveCarpeta(), mapa = {};
-  let pagina = "";
-  do {
-    const q = encodeURIComponent(`'${carpeta}' in parents and trashed=false`);
-    const r = await (await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=nextPageToken,files(id,name)&pageSize=1000${pagina ? "&pageToken=" + pagina : ""}`)).json();
-    for (const f of r.files || []) mapa[f.name] = f;
-    pagina = r.nextPageToken || "";
-  } while (pagina);
-  return (drive.archivos = mapa);
-}
-async function driveSubir(nombre, blob, tipo) {
-  const existente = (await driveArchivos())[nombre];
-  if (existente) {
-    await driveFetch(`https://www.googleapis.com/upload/drive/v3/files/${existente.id}?uploadType=media`, { method: "PATCH", headers: { "Content-Type": tipo }, body: blob });
-    return;
+// Busca o crea la carpeta "Rentas Sandra/parte1/parte2…" y regresa su id.
+async function driveRuta(partes) {
+  let padre = "", ruta = "";
+  for (const parte of [CARPETA_DRIVE, ...partes.map(limpiarNombre)]) {
+    ruta += "/" + parte;
+    if (!drive.carpetas[ruta]) {
+      let id = await driveBuscar(parte, padre, true);
+      if (!id) {
+        id = (await (await driveFetch("https://www.googleapis.com/drive/v3/files?fields=id", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: parte, mimeType: "application/vnd.google-apps.folder", ...(padre ? { parents: [padre] } : {}) }),
+        })).json()).id;
+      }
+      drive.carpetas[ruta] = id;
+    }
+    padre = drive.carpetas[ruta];
   }
-  const meta = { name: nombre, parents: [await driveCarpeta()] };
+  return padre;
+}
+async function driveCrear(carpeta, nombre, blob) {
   const cuerpo = new FormData();
-  cuerpo.append("metadata", new Blob([JSON.stringify(meta)], { type: "application/json" }));
+  cuerpo.append("metadata", new Blob([JSON.stringify({ name: nombre, parents: [carpeta] })], { type: "application/json" }));
   cuerpo.append("file", blob);
-  const f = await (await driveFetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name", { method: "POST", body: cuerpo })).json();
-  drive.archivos[f.name] = f;
+  return (await (await driveFetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id", { method: "POST", body: cuerpo })).json()).id;
+}
+// Dónde va cada foto dentro de "Rentas Sandra", con un nombre que se entienda.
+function ubicacionFoto(id) {
+  const lugar = l => `${plaza(l.plazaId).nombre} ${l.numero}`;
+  for (const c of E.contratos) for (const [k, d] of Object.entries(c.docs || {})) {
+    const i = (d.fotos || []).indexOf(id);
+    if (i >= 0) {
+      const doc = (DOCS_EXPEDIENTE.find(x => x.id === k) || { nombre: k }).nombre;
+      return [[SUB.locales, lugar(local(c.localId)), "Expediente " + c.inquilino.nombre], `${doc} ${i + 1}.jpg`];
+    }
+  }
+  for (const l of E.locales) for (const [campo, tipo] of [["fotosLicencia", "Para licencia"], ["fotosEntrega", "Al entregar"], ["fotosRecepcion", "Al recibir"]]) {
+    const i = (l[campo] || []).indexOf(id);
+    if (i >= 0) return [[SUB.locales, lugar(l), "Fotos del local"], `${tipo} ${i + 1}.jpg`];
+  }
+  const p = E.pagos.find(x => x.foto === id);
+  if (p) { const c = E.contratos.find(x => x.id === p.contratoId); return [[SUB.pagos, p.mes], `${c ? c.inquilino.nombre + " " + local(c.localId).numero : "Pago"} ${p.fecha}.jpg`]; }
+  const i = (E.ajustes.inePropietaria || []).indexOf(id);
+  if (i >= 0) return [[SUB.propietaria], `INE ${i + 1}.jpg`];
+  return [[SUB.otras], id + ".jpg"];
 }
 function programarSync() {
   if (!driveActivo()) return;
@@ -1349,22 +1369,35 @@ async function sincronizar(avisar) {
   if (!driveActivo() || drive.ocupado) return;
   drive.ocupado = true; drive.error = "";
   try {
-    const archivos = await driveArchivos(true);
+    const carpetaRespaldo = await driveRuta([SUB.respaldo]);
+    const idDatos = await driveBuscar("datos.json", carpetaRespaldo, false);
     const ultima = ls.get("ultimaSync") || "";
-    let usarRemoto = false;
-    if (archivos["datos.json"]) {
-      const remoto = await (await driveFetch(`https://www.googleapis.com/drive/v3/files/${archivos["datos.json"].id}?alt=media`)).json();
+    let subirDatos = !idDatos;
+    if (idDatos) {
+      const remoto = await (await driveFetch(`https://www.googleapis.com/drive/v3/files/${idDatos}?alt=media`)).json();
       const cambioRemoto = (remoto.guardadoEn || "") > ultima, cambioLocal = (E.guardadoEn || "") > ultima;
-      if (cambioRemoto && cambioLocal && remoto.guardadoEn !== E.guardadoEn)
+      let usarRemoto = cambioRemoto && remoto.guardadoEn !== E.guardadoEn;
+      if (usarRemoto && cambioLocal)
         usarRemoto = confirm("Hay cambios en otro aparato y también en este.\n\nAceptar: usar los de Drive (otro aparato).\nCancelar: quedarme con los de este aparato.");
-      else usarRemoto = cambioRemoto && remoto.guardadoEn !== E.guardadoEn;
-      if (usarRemoto) { E = migrar(remoto); await guardarLocal(); }
+      if (usarRemoto) { const mapa = { ...(E.driveFotos || {}) }; E = migrar(remoto); E.driveFotos = { ...mapa, ...E.driveFotos }; }
+      else subirDatos = cambioLocal || remoto.guardadoEn !== E.guardadoEn;
     }
-    // Fotos nuevas de este aparato
+    // Fotos de este aparato que aún no están en Drive
+    E.driveFotos = E.driveFotos || {};
     const ids = await tx("fotos", "readonly", st => st.getAllKeys());
-    for (const id of ids) if (!archivos[id + ".jpg"]) await driveSubir(id + ".jpg", await leerFotoLocal(id), "image/jpeg");
+    for (const id of ids) {
+      if (E.driveFotos[id]) continue;
+      const [ruta, nombre] = ubicacionFoto(id);
+      E.driveFotos[id] = await driveCrear(await driveRuta(ruta), nombre, await leerFotoLocal(id));
+      subirDatos = true;
+    }
     E.ultimoRespaldo = hoyISO();
-    if (!usarRemoto) await driveSubir("datos.json", new Blob([JSON.stringify(E)], { type: "application/json" }), "application/json");
+    if (subirDatos) {
+      E.guardadoEn = new Date().toISOString();
+      const blob = new Blob([JSON.stringify(E)], { type: "application/json" });
+      if (idDatos) await driveFetch(`https://www.googleapis.com/upload/drive/v3/files/${idDatos}?uploadType=media`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: blob });
+      else await driveCrear(carpetaRespaldo, "datos.json", blob);
+    }
     await guardarLocal();
     ls.set("ultimaSync", E.guardadoEn || "");
     ls.set("ultimaSyncHora", new Date().toISOString());
@@ -1385,7 +1418,11 @@ function vDrive() {
     <div class="dato"><span>Última vez</span>${hora ? fechaBonita(hora.slice(0, 10)) + " " + hora.slice(11, 16) : "Nunca"}</div>
     ${drive.error ? `<div class="aviso">${esc(drive.error)}</div>` : ""}</div>
     <button class="btn" onclick="${driveActivo() ? "sincronizar(true)" : "conectarDrive()"}" ${driveListo() ? "" : "disabled"}>${ic("respaldo")}${driveActivo() ? "Sincronizar ahora" : "Conectar con Google Drive"}</button>
-    <p class="sub" style="font-weight:400">Google pide permiso de nuevo cada vez que abres la app; es un toque. Tus datos quedan en tu Drive, en la carpeta «${CARPETA_DRIVE}». Nadie más los ve.</p>
+    <div class="card"><b>Tu carpeta en Drive: «${CARPETA_DRIVE}»</b>
+      <p class="sub" style="font-weight:400">${SUB.respaldo} · ${SUB.locales} (expediente y fotos de cada local) · ${SUB.pagos} (comprobantes por mes) · ${SUB.propietaria} (tu INE)</p>
+      <b>Seguridad</b>
+      <p class="sub" style="font-weight:400">Google te pedirá permiso para que la app use <b>solo los archivos que ella crea</b>. No puede ver, cambiar ni borrar ningún otro archivo de tu Drive, y nunca borra nada. Puedes quitarle el permiso cuando quieras en myaccount.google.com/permissions.</p></div>
+    <p class="sub" style="font-weight:400">Google pide un toque para conectar cada vez que abres la app.</p>
     <a class="btn sec" href="#/respaldo">Respaldo manual en archivo</a>`, "#/mas");
 }
 
