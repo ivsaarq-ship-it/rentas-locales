@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#CFE8FA">
+<title>Rentas Sandra</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icono.svg">
+<link rel="apple-touch-icon" href="icono-192.png">
+<link rel="preload" href="lib/fuentes/caprasimo-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="estilos.css">
+</head>
+<body>
+<header><button id="atras" aria-label="Atrás"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></button><div><h1 id="tit">Rentas</h1><p id="sub"></p></div></header>
+<main id="main"></main>
+<nav>
+  <span class="marca">Rentas Sandra</span>
+  <a href="#/inicio" data-t="inicio"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>Inicio</a>
+  <a href="#/locales" data-t="locales"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9l2-5h14l2 5M3 9v11h18V9M3 9h18M9 20v-6h6v6"/></svg>Locales</a>
+  <a href="#/pagos" data-t="pagos"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/></svg>Pagos</a>
+  <a href="#/mas" data-t="mas"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>Más</a>
+</nav>
+<div id="velo" onclick="if(event.target===this)cerrarHoja()">
+  <div id="hoja"><div class="hoja-cab"><b id="hoja-tit"></b><button onclick="cerrarHoja()" aria-label="Cerrar"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div><div id="hoja-cuerpo"></div></div>
+</div>
+<script src="lib/jspdf.umd.min.js" defer></script>
+<script src="datos.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
