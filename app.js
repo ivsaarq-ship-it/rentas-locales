@@ -249,7 +249,12 @@ function alertas() {
     else if (d <= 15) A.push(["a", `Gasto vence en ${d} días · ${pesos(g.monto)}`, `${g.concepto} · ${plaza(g.plazaId).nombre}`, "#/gastos"]);
   }
   for (const r of E.reparaciones) if (r.estado !== "Terminada") A.push(["a", "Reparación pendiente", `${r.titulo} · ${nombreLocal(local(r.localId))}`, "#/local/" + r.localId]);
-  if (driveConectado() && !driveActivo()) A.unshift(["a", "Toca para conectar Google Drive", "Así se guarda todo solo y ves lo mismo en tus aparatos", "#/drive"]);
+  // Drive: avisar solo si hay cambios sin subir, o si pasó una semana (por si hubo cambios en otro aparato).
+  if (driveConectado() && !driveActivo()) {
+    const ultima = ls.get("ultimaSyncHora") || "";
+    if ((E.guardadoEn || "") > (ls.get("ultimaSync") || "")) A.unshift(["a", "Cambios sin subir a Drive", "Toca para subirlos. Mientras, siguen guardados en tu celular", "#/drive"]);
+    else if (!ultima || diasEntre(ultima.slice(0, 10), hoy) > 7) A.unshift(["a", "Revisa tu Google Drive", "Hace más de una semana que no se conecta", "#/drive"]);
+  }
   else if (!driveConectado() && (!E.ultimoRespaldo || diasEntre(E.ultimoRespaldo, hoy) > 7)) A.push(["a", "Haz tu respaldo semanal", E.ultimoRespaldo ? "Último: " + fechaBonita(E.ultimoRespaldo) : "Aún no tienes respaldo", "#/respaldo"]);
   A.sort((a, b) => (a[0] === b[0] ? 0 : a[0] === "r" ? -1 : 1));
   // El aviso de Drive siempre arriba
@@ -1427,7 +1432,7 @@ function vDrive() {
       <p class="sub" style="font-weight:400">${SUB.respaldo} · ${SUB.locales} (expediente y fotos de cada local) · ${SUB.pagos} (comprobantes por mes) · ${SUB.propietaria} (tu INE)</p>
       <b>Seguridad</b>
       <p class="sub" style="font-weight:400">Google te pedirá permiso para que la app use <b>solo los archivos que ella crea</b>. No puede ver, cambiar ni borrar ningún otro archivo de tu Drive, y nunca borra nada. Puedes quitarle el permiso cuando quieras en myaccount.google.com/permissions.</p></div>
-    <p class="sub" style="font-weight:400">Google pide un toque para conectar cada vez que abres la app.</p>
+    <p class="sub" style="font-weight:400">Si hay cambios sin subir, Inicio te avisa y con un toque se suben. Si no lo tocas, todo sigue guardado en tu celular.</p>
     <a class="btn sec" href="#/respaldo">Respaldo manual en archivo</a>`, "#/mas");
 }
 
