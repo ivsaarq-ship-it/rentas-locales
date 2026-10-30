@@ -177,3 +177,18 @@ nav .marca{display:none}
 .cal td.cal-vac:has(.cal-add:hover),.cal td.cal-sin:has(.cal-add:hover){outline:2px solid var(--mor);outline-offset:-2px}
 .cal th a{display:block;color:inherit}
 .cal-leyenda .cal-vac,.cal-leyenda .cal-sin{padding:3px 10px;border-radius:12px;font-size:12px;border:1px solid var(--borde)}
+
+/* Guía de arranque */
+.guia{background:#EEE8F8;border-radius:22px;padding:14px 16px;margin:14px 0 12px}
+.guia>b{display:block;font-size:17px;font-weight:800;color:var(--mor);margin-bottom:6px}
+.guia-paso{display:flex;align-items:center;gap:10px;min-height:46px;font-size:15px;font-weight:600;border-bottom:1px solid rgba(91,63,160,.12)}
+.guia-paso>span:nth-child(2){flex:1}
+.guia-paso.ok{color:var(--gris3);font-weight:400}
+.guia-paso.ok>span:nth-child(2){text-decoration:line-through}
+.guia-check{width:24px;height:24px;border-radius:50%;border:2px solid var(--mor);display:grid;place-items:center;flex:none;background:#fff}
+.guia-paso.ok .guia-check{background:var(--mor);color:#fff}
+.guia-check svg.i{width:15px;height:15px;stroke-width:3}
+.guia .barra{margin:10px 0 2px;background:#fff}
+/* Filtro de plazas del calendario */
+.cal-filtro{display:flex;align-items:center;gap:10px;margin:0 0 10px;font-size:14px;font-weight:700;color:var(--txt)}
+.cal-filtro select{margin:0;flex:1;max-width:320px}

@@ -241,7 +241,6 @@ function alertas() {
     if (f.length) A.push(["a", "Expediente incompleto", `${n} · falta: ${f.map(d => d.nombre.replace(/ del (inquilino|fiador)/, "")).slice(0, 2).join(", ")}${f.length > 2 ? "…" : ""}`, ir]);
     if (ineVencida(c)) A.push(["r", "INE vencida", n, ir]);
   }
-  if (sinDatos.length) A.push(["a", `${sinDatos.length} locales rentados sin datos del inquilino`, "Captúralos para cobrar y recibir avisos", "#/locales"]);
   for (const g of E.gastos) {
     if (g.pagado || !g.vence) continue;
     const d = diasEntre(hoy, g.vence);
@@ -471,9 +470,28 @@ function vInicio() {
       <a class="kpi" href="#/vacios"><span>Vacíos</span><b>${vac}</b><span>listos para rentar</span></a>
     </div>
     <div class="dos"><a class="btn" href="#/pagos/${mes}">${ic("pago")}Registrar pago</a><a class="btn sec" href="#/vacios">${ic("mas")}Nuevo inquilino</a></div>
+    ${guiaArranque()}
     <h2>Hoy hay que ver ${A.length ? "(" + A.length + ")" : ""}</h2>
     ${A.length ? A.map(([t, tit, det, ir]) => `<a class="al ${t}" href="${ir}"><span class="ic">${ic(iconoAlerta(tit))}</span><div>${esc(tit)}<em>${esc(det)}</em></div>${ic("flecha")}</a>`).join("") : '<div class="card vacio">Todo en orden</div>'}
   `);
+}
+
+// Guía para los primeros días: se oculta sola cuando todo está listo.
+function guiaArranque() {
+  const rentados = E.locales.filter(l => l.estado === "rentado");
+  const faltan = rentados.filter(l => !contratoActivo(l.id));
+  const ine = (E.ajustes.inePropietaria || []).length > 0, drv = driveConectado();
+  if (!faltan.length && ine && drv) return "";
+  const listos = rentados.length - faltan.length, pct = rentados.length ? Math.round((listos / rentados.length) * 100) : 100;
+  const paso = (ok, texto, ir) => `<a class="guia-paso${ok ? " ok" : ""}" href="${ir}"><span class="guia-check">${ok ? '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>' : ""}</span><span>${texto}</span>${ok ? "" : ic("flecha")}</a>`;
+  const sig = faltan[0];
+  return `<section class="guia"><b>Para arrancar</b>
+    ${paso(ine, "Sube tu INE", "#/ajustes")}
+    ${paso(drv, "Conecta tu Google Drive", "#/drive")}
+    ${paso(!faltan.length, `Captura a tus inquilinos · ${listos} de ${rentados.length}`, sig ? "#/rentar/" + sig.id + "?existente=1" : "#/locales")}
+    <div class="barra"><i style="width:${pct}%"></i></div>
+    ${sig ? `<a class="btn chico" href="#/rentar/${sig.id}?existente=1">${ic("mas")}Capturar el siguiente: ${esc(nombreLocal(sig))}</a>` : ""}
+  </section>`;
 }
 
 let filtroLocales = "todos";
@@ -1475,7 +1493,7 @@ function vCalendario(arg) {
   const mesNombre = m => MESES[Number(m.slice(5)) - 1].slice(0, 3) + " " + m.slice(2, 4);
   pantalla("Calendario", nombreMes(meses[0]) + " a " + nombreMes(meses[11]), `
     <div class="mesnav"><a href="#/calendario/${sumarMeses(base, -1)}" aria-label="Mes anterior"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></a><a href="#/calendario" style="width:auto;padding:0 14px;font-size:14px;font-weight:700">Hoy</a><a href="#/calendario/${sumarMeses(base, 1)}" aria-label="Mes siguiente">${ic("flecha")}</a></div>
-    <div class="filtros">${[["todas", "Todas"], ...E.plazas.map(p => [p.id, p.nombre])].map(([k, t]) => `<button class="${filtroCal === k ? "on" : ""}" onclick="filtroCal='${k}';render()">${esc(t)}</button>`).join("")}</div>
+    <label class="cal-filtro">Plaza<select onchange="filtroCal=this.value;render()">${[["todas", "Todas las plazas"], ...E.plazas.map(p => [p.id, p.nombre])].map(([k, t]) => `<option value="${esc(k)}" ${filtroCal === k ? "selected" : ""}>${esc(t)}</option>`).join("")}</select></label>
     <div class="cal-leyenda"><span class="bar ok">Pagó</span><span class="bar ojo">Parcial</span><span class="bar pend">Pendiente</span><span class="bar mal">Debe</span><span class="cal-vac">Vacío</span><span class="cal-sin">Sin datos</span></div>
     <div class="calwrap"><table class="cal">
       <thead><tr><th>Local</th>${meses.map(m => `<th class="${m === hoyMes ? "hoy" : ""}">${mesNombre(m)}</th>`).join("")}</tr></thead>
