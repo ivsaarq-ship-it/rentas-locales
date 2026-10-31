@@ -60,6 +60,8 @@ function estadoInicial() {
     })),
     contratos: [], pagos: [], gastos: [], reparaciones: [],
     ultimoRespaldo: "",
+    cierres: {},
+    gastosPersonales: [], avisos: [], historico: {},
   };
 }
 
@@ -72,6 +74,19 @@ function migrar(e) {
   for (const p of e.plazas) if (p.municipio === undefined) p.municipio = (PLAZAS_INICIALES.find(x => x.id === p.id) || {}).municipio || "";
   for (const l of e.locales) if (!l.fotosLicencia) l.fotosLicencia = [];
   if (!e.driveFotos) e.driveFotos = {};
+  if (!e.cierres) e.cierres = {};
+  if (!e.gastosPersonales) e.gastosPersonales = [];
+  if (!e.avisos) e.avisos = [];
+  if (!e.historico) e.historico = {};
+  // Decisiones de Sergio, 31 oct 2026: todo como dicen los contratos firmados.
+  if (a.recargoPct === undefined) { a.recargoPct = 10; delete a.recargo; }
+  if (a.respuestaRenovacion === undefined) a.respuestaRenovacion = 30;
+  if (a.arrendador === "Sandra Velasco") a.arrendador = "Sandra Velasco Soto";
+  if (a.propietarias === undefined) a.propietarias = a.arrendador + " | ";
+  if (a.interesPagare === "") a.interesPagare = "10";
+  if (!a.plantillaContrato || a.plantillaContrato.startsWith(INICIO_PLANTILLA_PROVISIONAL)) a.plantillaContrato = PLANTILLA_CONTRATO;
+  const ren = { CRE: { "158-B": "159-B" }, STM: { "6102-A": "6102-B" } };
+  for (const l of e.locales) if (ren[l.plazaId] && ren[l.plazaId][l.numero]) l.numero = ren[l.plazaId][l.numero];
   return e;
 }
 
@@ -96,6 +111,8 @@ function sumarDias(s, n) { const d = aFecha(s); d.setDate(d.getDate() + n); retu
 function finContrato(inicio, meses) {
   const d = aFecha(inicio); d.setMonth(d.getMonth() + Number(meses)); d.setDate(d.getDate() - 1); return iso(d);
 }
+// Fin del contrato: la fecha que dice el contrato firmado; si no la tiene, se calcula con la duración.
+const finC = c => c.fin || finContrato(c.inicio, c.meses);
 
 // Días festivos oficiales (Ley Federal del Trabajo, art. 74).
 const festivosCache = {};
@@ -173,7 +190,10 @@ function cargo(c, mes) {
   const hoy = hoyISO();
   const renta = Number(c.renta) || 0;
   const tarde = (pagado < renta && hoy > limite) || pagos.some(p => p.fecha > limite);
-  const recargo = tarde ? Number(E.ajustes.recargo) || 0 : 0;
+  // Contrato, cláusula séptima: pena mensual del % de la renta por cada mes (o fracción) de atraso.
+  const hasta = pagado >= renta ? pagos.map(p => p.fecha).sort().pop() : hoy;
+  const mesesTarde = tarde ? Math.max(1, Math.ceil(diasEntre(limite, hasta > limite ? hasta : limite) / 30)) : 0;
+  const recargo = Math.round(renta * (Number(E.ajustes.recargoPct) || 0) / 100 * mesesTarde);
   const total = renta + recargo;
   const saldo = Math.max(0, total - pagado);
   let estado = "Pendiente";
@@ -185,7 +205,7 @@ function cargo(c, mes) {
 // Meses que se cobran: desde "cobrarDesde" hasta el mes actual (sin pasar del fin del contrato).
 function mesesCobro(c, hasta = mesActual()) {
   const out = [];
-  const finMes = finContrato(c.inicio, c.meses).slice(0, 7);
+  const finMes = finC(c).slice(0, 7);
   let m = c.cobrarDesde || c.inicio.slice(0, 7);
   const tope = hasta < finMes ? hasta : finMes;
   while (m <= tope && out.length < 240) { out.push(m); m = sumarMeses(m, 1); }
@@ -210,7 +230,7 @@ function estadoLocal(l) {
   const c = contratoActivo(l.id);
   if (!c) return ["Faltan datos", "a"];
   if (atrasos(c).length) return ["Atrasado", "r"];
-  const dias = diasEntre(hoyISO(), finContrato(c.inicio, c.meses));
+  const dias = diasEntre(hoyISO(), finC(c));
   if (dias < 0) return ["Contrato vencido", "r"];
   if (l.licencia !== "Sí") return ["Sin licencia", "a"];
   if (dias <= E.ajustes.avisoRenovacion) return ["Renovar", "a"];
@@ -229,7 +249,7 @@ function alertas() {
     if (!c) { sinDatos.push(l.numero); continue; }
     const at = atrasos(c);
     if (at.length) A.push(["r", `Renta atrasada · ${pesos(at.reduce((s, x) => s + x.saldo, 0))}`, `${n} · ${c.inquilino.nombre} · ${at.length} ${at.length > 1 ? "meses" : "mes"}`, ir, [c.id, "atraso"]]);
-    const fin = finContrato(c.inicio, c.meses), dias = diasEntre(hoy, fin);
+    const fin = finC(c), dias = diasEntre(hoy, fin);
     if (dias < 0) A.push(["r", "Contrato vencido", `${n} · venció ${fechaBonita(fin)}`, ir, [c.id, "renovar"]]);
     else if (dias <= E.ajustes.avisoRenovacion) A.push(["a", `Contrato vence en ${dias} días`, `${n} · renta sugerida ${pesos(rentaSugerida(c))}`, ir, [c.id, "renovar"]]);
     if (l.licencia !== "Sí") A.push(["r", "Sin licencia de giro", `${n} · ${c.inquilino.nombre}`, ir, [c.id, "licencia"]]);
@@ -260,6 +280,41 @@ function alertas() {
   const i = A.findIndex(x => /Drive/.test(x[1]));
   if (i > 0) A.unshift(A.splice(i, 1)[0]);
   return A;
+}
+// Avisos de arriba (campana con número rojo): contratos vencidos o por vencer e incongruencias.
+function avisos() {
+  const hoy = hoyISO(), V = [], I = [];
+  for (const c of activos()) {
+    const l = local(c.localId); if (!l) continue;
+    const fin = finC(c), dias = diasEntre(hoy, fin), n = nombreLocal(l);
+    if (dias < 0) V.push({ t: "r", titulo: "Contrato vencido", det: `${n} · ${c.inquilino.nombre} · venció ${fechaBonita(fin)}`, ir: "#/local/" + l.id });
+    else if (dias <= E.ajustes.avisoRenovacion) V.push({ t: "a", titulo: `Contrato vence en ${dias} días`, det: `${n} · ${c.inquilino.nombre} · ${fechaBonita(fin)}${dias <= E.ajustes.respuestaRenovacion ? " · ya pasó la fecha para responder por escrito" : ""}`, ir: "#/local/" + l.id });
+    if (c.fin && c.meses && c.fin !== finContrato(c.inicio, c.meses) && !c.finRevisado) I.push({ t: "a", titulo: "Fechas del contrato no cuadran", det: `${n} · del ${fechaBonita(c.inicio)} al ${fechaBonita(c.fin)} no son ${c.meses} meses. Se respeta lo que dice el contrato`, ir: "#/local/" + l.id, id: "fin:" + c.id });
+  }
+  for (const x of E.avisos || []) if (!x.revisado) I.push({ t: x.t || "a", titulo: x.titulo, det: x.detalle, ir: x.localId ? "#/local/" + x.localId : "#/avisos", id: x.id });
+  return { V, I, total: V.length + I.length };
+}
+function pintarCampana() {
+  const b = document.getElementById("campana"); if (!b || !E) return;
+  const n = avisos().total;
+  b.querySelector(".badge").textContent = n > 99 ? "99+" : n;
+  b.querySelector(".badge").style.display = n ? "" : "none";
+  b.setAttribute("aria-label", n ? `Avisos: ${n}` : "Avisos: ninguno");
+}
+async function revisarAviso(id) {
+  if (id.startsWith("fin:")) { const c = E.contratos.find(x => x.id === id.slice(4)); if (c) c.finRevisado = hoyISO(); }
+  else { const x = E.avisos.find(a => a.id === id); if (!x) return; x.revisado = hoyISO(); }
+  await guardar(); render();
+}
+function vAvisos() {
+  const { V, I } = avisos();
+  const fila = x => `<div class="al-fila"><a class="al ${x.t}" href="${x.ir}"><span class="ic">${ic(/ontrato/.test(x.titulo) ? "cal" : "alerta")}</span><div>${esc(x.titulo)}<em>${esc(x.det)}</em></div>${ic("flecha")}</a>${x.id ? `<button class="al-wa" onclick="revisarAviso('${x.id}')" aria-label="Ya lo revisé: ${esc(x.titulo)}">✓</button>` : ""}</div>`;
+  const rev = (E.avisos || []).filter(x => x.revisado);
+  pantalla("Avisos", V.length + I.length ? `${V.length + I.length} por revisar` : "Todo en orden", `
+    <h2>Contratos vencidos o por vencer (${V.length})</h2>${V.length ? V.map(fila).join("") : '<div class="card vacio">Ninguno</div>'}
+    <h2>Cosas que no cuadran (${I.length})</h2>${I.length ? I.map(fila).join("") : '<div class="card vacio">Ninguna</div>'}
+    <p class="sub" style="font-weight:400">Toca ✓ cuando ya lo revisaste y se quita de la cuenta.</p>
+    ${rev.length ? `<h2>Ya revisados (${rev.length})</h2><div class="card">${rev.map(x => `<div class="fila"><div>${esc(x.titulo)}<small>${esc(x.detalle)} · revisado ${fechaBonita(x.revisado)}</small></div></div>`).join("")}</div>` : ""}`, "#/inicio");
 }
 function iconoAlerta(t) {
   if (/licencia/i.test(t)) return "doc";
@@ -370,18 +425,33 @@ function pdf(titulo, texto, nombreArchivo) {
   return new File([doc.output("blob")], nombreArchivo, { type: "application/pdf" });
 }
 function llenar(plantilla, datos) {
-  // Lo que falta se deja en blanco para llenarlo a mano; {INTERES} es opcional.
-  return plantilla.replace(/\{([A-Z_]+)\}/g, (m, k) => (datos[k] !== undefined && datos[k] !== "" ? datos[k] : k === "INTERES" ? "" : "________________"));
+  // Lo que falta se deja en blanco para llenarlo a mano; {INTERES} e {IVA} son opcionales.
+  return plantilla.replace(/\{([A-Z_]+)\}/g, (m, k) => (datos[k] !== undefined && datos[k] !== "" ? datos[k] : k === "INTERES" || k === "IVA" ? "" : "________________"));
 }
+// Quién renta: la propietaria del contrato. Si no es Sandra, va «representada por» ella (poder notarial).
+const propietariaDe = c => (c.propietaria || "").trim() || E.ajustes.arrendador;
+function arrendadoraTexto(c) {
+  const pr = propietariaDe(c), rep = E.ajustes.arrendador;
+  return pr.toUpperCase() === rep.toUpperCase() ? pr.toUpperCase() : `${pr.toUpperCase()}, representada en este acto por ${rep.toUpperCase()}, quien cuenta con poder notarial amplio para rentar y administrar`;
+}
+// Propietarias y sus domicilios (Ajustes, un renglón por propietaria: «Nombre | Domicilio»).
+const propietarias = () => String(E.ajustes.propietarias || "").split("\n").map(r => r.split("|").map(x => x.trim())).filter(r => r[0]);
+const domicilioPropietaria = n => (propietarias().find(r => r[0].toUpperCase() === String(n).toUpperCase()) || [])[1] || "";
+const direccionLocal = l => (l.direccion || "").trim() || `LOCAL COMERCIAL MARCADO CON EL NÚMERO ${l.numero}, ${plaza(l.plazaId).direccion.replace(/\.\s*$/, "")}`;
 function datosContrato(c) {
   const l = local(c.localId), p = plaza(l.plazaId), a = E.ajustes;
+  const meses = Number(c.meses) || 12;
   return {
-    CIUDAD: a.ciudadFirma, FECHA: fechaLarga(c.firma || hoyISO()), ARRENDADOR: a.arrendador,
+    CIUDAD: a.ciudadFirma, FECHA: fechaLarga(c.firma || hoyISO()), ARRENDADOR: arrendadoraTexto(c), PROPIETARIA: propietariaDe(c).toUpperCase(),
+    REPRESENTANTE: a.arrendador.toUpperCase(), FIRMA_ARRENDADOR: propietariaDe(c).toUpperCase() === a.arrendador.toUpperCase() ? a.arrendador.toUpperCase() : `${a.arrendador.toUpperCase()}\nen representación de ${propietariaDe(c).toUpperCase()}`,
+    LOCAL_DESCRIPCION: direccionLocal(l).toUpperCase(), IVA: c.iva === "Sí" ? " MÁS IVA" : "", DOM_ARRENDADORA: domicilioPropietaria(propietariaDe(c)).toUpperCase(),
+    DURACION: meses % 12 === 0 ? (meses / 12 === 1 ? "1 UN AÑO" : `${meses / 12} AÑOS`) : `${meses} MESES`,
+    DIA_PAGO_TEXTO: `EL DÍA ${c.diaPago} DE CADA MES`, RECARGO: a.recargoPct, RESPUESTA: a.respuestaRenovacion,
     INQUILINO: c.inquilino.nombre, INQ_DOMICILIO: c.inquilino.domicilio,
     FIADOR: c.fiador.nombre, FIA_DOMICILIO: c.fiador.domicilio,
     LOCAL: l.numero, NIVEL: (l.nivel || "").toLowerCase(), DIRECCION: p.direccion.replace(/\.\s*$/, ""), GIRO: c.giro || l.giro,
     RENTA: pesos(c.renta), RENTA_LETRA: letras(c.renta), DEPOSITO: pesos(c.deposito), DEPOSITO_LETRA: letras(c.deposito),
-    DIA_PAGO: c.diaPago, GRACIA: a.gracia, MESES: c.meses, INICIO: fechaLarga(c.inicio), FIN: fechaLarga(finContrato(c.inicio, c.meses)),
+    DIA_PAGO: c.diaPago, GRACIA: a.gracia, MESES: c.meses, INICIO: fechaLarga(c.inicio).toUpperCase(), FIN: fechaLarga(finC(c)).toUpperCase(), AVISO: a.avisoRenovacion,
   };
 }
 function compartirContrato(id) {
@@ -392,7 +462,7 @@ function compartirContrato(id) {
 function compartirPagares(id) {
   const c = E.contratos.find(x => x.id === id), d = datosContrato(c);
   const interes = E.ajustes.interesPagare ? `En caso de no pagar a su presentación, causará intereses moratorios del ${E.ajustes.interesPagare}% mensual.` : "";
-  const uno = (monto, concepto) => llenar(E.ajustes.plantillaPagare, { ...d, MONTO: pesos(monto), MONTO_LETRA: letras(monto), CONCEPTO: concepto, INTERES: interes });
+  const uno = (monto, concepto) => llenar(E.ajustes.plantillaPagare, { ...d, ARRENDADOR: E.ajustes.arrendador.toUpperCase(), MONTO: pesos(monto), MONTO_LETRA: letras(monto), CONCEPTO: concepto, INTERES: interes });
   const texto = uno(c.renta, "un mes de renta") + "\n\n\n- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -\n\n\n" + uno(c.deposito, "depósito");
   const f = pdf("", texto, `Pagarés ${nombreLocal(local(c.localId))}.pdf`);
   if (f) compartirArchivo(f, "Pagarés");
@@ -415,7 +485,7 @@ const docsQuePide = c => expedienteFaltan(c).filter(d => d.id !== "licencia");
 function mensajeAviso(cid, tipo) {
   const c = E.contratos.find(x => x.id === cid), l = local(c.localId);
   const hola = `Hola ${c.inquilino.nombre.split(" ")[0]}`, loc = `del local ${l.numero} (${plaza(l.plazaId).nombre})`;
-  const fin = finContrato(c.inicio, c.meses);
+  const fin = finC(c);
   switch (tipo) {
     case "atraso": {
       const at = atrasos(c), total = at.reduce((s, x) => s + x.saldo, 0);
@@ -600,7 +670,7 @@ function vLocal(id) {
     else h += `<a class="btn" href="#/rentar/${id}">Rentar este local</a>`;
     h += `<button class="btn sec" onclick="whatsappRequisitos()">Mandar requisitos por WhatsApp</button>`;
   } else {
-    const fin = finContrato(c.inicio, c.meses), dias = diasEntre(hoyISO(), fin);
+    const fin = finC(c), dias = diasEntre(hoyISO(), fin);
     const at = atrasos(c);
     const iniciales = c.inquilino.nombre.split(" ").filter(Boolean).slice(0, 2).map(x => x[0]).join("").toUpperCase();
     const debe = at.reduce((s, x) => s + x.saldo, 0);
@@ -609,6 +679,8 @@ function vLocal(id) {
       ${c.inquilino.correo ? `<div class="dato"><span>Correo</span>${esc(c.inquilino.correo)}</div>` : ""}
       ${c.inquilino.rfc ? `<div class="dato"><span>RFC</span>${esc(c.inquilino.rfc)} · ${esc(c.inquilino.tipo)}</div>` : ""}
       <div class="dato"><span>Contrato</span>${fechaBonita(c.inicio)} a ${fechaBonita(fin)}</div>
+      <div class="dato"><span>Propietaria</span>${esc(propietariaDe(c))}</div>
+      ${c.iva === "Sí" ? `<div class="dato"><span>Renta</span>${pesos(c.renta)} más IVA</div>` : ""}
       <div class="dos"><button class="btn" onclick="registrarPago('${c.id}')">Registrar pago</button><button class="btn wa" onclick="mensajesWA('${c.id}')">${ic("wa")}WhatsApp</button></div>
       <button class="btn sec chico" onclick="editarContrato('${c.id}')">Editar datos del inquilino</button></div>`;
 
@@ -701,6 +773,7 @@ function vPagos(mes) {
     }).join("") : `<div class="vacio">${filtroPagos === "cobrar" ? "Nada por cobrar" : "Aún no hay pagos"}</div>`}</div>
     ${atr.length ? `<button class="btn wa" onclick="recordarTodos('${mes}')">${ic("wa")}${atr.length === 1 ? "Recordar al atrasado" : `Recordar a los ${atr.length} atrasados`}</button>` : ""}
     <a class="btn sec" href="#/calendario">${ic("cal")}Ver calendario de locales</a>
+    <a class="btn sec" href="#/cierre">${ic("pdf")}Cierre de mes</a>
     <a class="btn sec" href="#/banco">${ic("banco")}Revisar con estado de cuenta</a>
   `);
 }
@@ -725,6 +798,7 @@ function registrarPago(cid, mes) {
     const deuda = mesesCobro(c).map(m => cargo(c, m)).find(x => x.saldo > 0);
     mes = deuda ? deuda.mes : mesActual();
   }
+  if (cierreGuardado(mes) && !confirm(`${nombreMes(mes)} ya está cerrado. ¿Registrar el pago de todos modos?`)) return;
   const x = cargo(c, mes);
   let foto = "";
   hoja(`<form id="f">
@@ -821,6 +895,10 @@ function vRentar(id, existente) {
     if (!b.deposito) b.deposito = b.renta;
     b.depositoRecibido = b.deposito;
     b.firma = hoyISO();
+    b.fin = finContrato(b.inicio, b.meses);
+    // Propietaria: la del último contrato de este local; si no hay, Sandra.
+    const ant = E.contratos.filter(x => x.localId === id).pop();
+    b.propietaria = (ant && ant.propietaria) || E.ajustes.arrendador;
     const { existente: _, ...c } = b;
     E.contratos.push(c);
     const l2 = local(id); l2.estado = "rentado"; l2.giro = b.giro;
@@ -949,8 +1027,9 @@ function editarContrato(cid) {
     ["i_tipo", "Tipo", "select", ["Persona física", "Empresa (persona moral)"]], ["giro", "Giro"],
     ["f_nombre", "Fiador"], ["f_tel", "Tel. fiador", "tel"], ["f_domicilio", "Domicilio fiador"], ["f_curp", "CURP fiador"],
     ["renta", "Renta mensual", "number"], ["deposito", "Depósito", "number"], ["diaPago", "Día de pago", "number"],
-    ["inicio", "Inicio del contrato", "date"], ["meses", "Duración (meses)", "number"], ["cobrarDesde", "Cobrar desde", "month"],
-  ], v, d => {
+    ["inicio", "Inicio del contrato", "date"], ["meses", "Duración (meses)", "number"], ["fin", "Fin (como dice el contrato)", "date"], ["cobrarDesde", "Cobrar desde", "month"],
+    ["propietaria", "Propietaria (arrendadora en el contrato)"], ["iva", "¿La renta es más IVA?", "select", ["No", "Sí"]],
+  ], { ...v, fin: finC(c), propietaria: propietariaDe(c), iva: c.iva || "No" }, d => {
     for (const [k, x] of Object.entries(d)) {
       if (k.startsWith("i_")) c.inquilino[k.slice(2)] = x;
       else if (k.startsWith("f_")) c.fiador[k.slice(2)] = x;
@@ -1001,11 +1080,11 @@ async function fotoLocal(id, campo) {
 }
 function renovar(cid) {
   const c = E.contratos.find(x => x.id === cid);
-  const fin = finContrato(c.inicio, c.meses);
+  const fin = finC(c);
   formulario("Renovar contrato", [["renta", "Renta nueva", "number"], ["inicio", "Inicio del nuevo contrato", "date"], ["meses", "Duración (meses)", "number"]],
     { renta: rentaSugerida(c), inicio: sumarDias(fin, 1), meses: c.meses }, d => {
       c.terminado = sumarDias(d.inicio, -1);
-      const n = { ...structuredClone(c), id: "C" + uid(), terminado: undefined, renta: d.renta, deposito: c.deposito, inicio: d.inicio, meses: d.meses, cobrarDesde: d.inicio.slice(0, 7), firma: hoyISO() };
+      const n = { ...structuredClone(c), id: "C" + uid(), terminado: undefined, renta: d.renta, deposito: c.deposito, inicio: d.inicio, meses: d.meses, fin: finContrato(d.inicio, d.meses), cobrarDesde: d.inicio.slice(0, 7), firma: hoyISO() };
       // Documentos de identidad siguen; contrato y pagarés se firman de nuevo.
       n.docs = n.docs || {};
       for (const k of ["pagRenta", "pagDep", "contrato"]) delete n.docs[k];
@@ -1108,6 +1187,34 @@ function editarGasto(gid) {
     Object.assign(g, d);
     if (g.nuevo) { delete g.nuevo; E.gastos.push(g); }
   });
+}
+
+/* ===== Gastos personales (separados de los de los locales) ===== */
+function vPersonales(arg) {
+  const mes = /^\d{4}-\d{2}$/.test(arg || "") ? arg : mesActual();
+  const gs = E.gastosPersonales.filter(g => g.mes === mes);
+  const total = gs.reduce((s, g) => s + Number(g.monto || 0), 0);
+  const año = mes.slice(0, 4), delAño = E.gastosPersonales.filter(g => (g.mes || "").startsWith(año)).reduce((s, g) => s + Number(g.monto || 0), 0);
+  pantalla("Gastos personales", nombreMes(mes), `
+    <div class="mesnav"><a href="#/personales/${sumarMeses(mes, -1)}" aria-label="Mes anterior"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></a><b>${nombreMes(mes)}</b><a href="#/personales/${sumarMeses(mes, 1)}" aria-label="Mes siguiente">${ic("flecha")}</a></div>
+    <div class="cifras"><div><span>Este mes</span><b>${pesos(total)}</b></div><div><span>En ${año}</span><b>${pesos(delAño)}</b></div></div>
+    <button class="btn" onclick="editarPersonal('', '${mes}')">${ic("mas")}Agregar gasto personal</button>
+    <div class="card">${gs.length ? gs.map(g => `<div class="fila" onclick="editarPersonal('${g.id}')"><div>${esc(g.concepto)}${g.nota ? `<small>${esc(g.nota)}</small>` : ""}</div><span>${pesos(g.monto)}</span></div>`).join("") : '<div class="vacio">Sin gastos personales este mes</div>'}</div>
+    <p class="sub" style="font-weight:400">No se mezclan con los gastos de los locales. En el cierre de mes se restan de lo que queda por entregar.</p>`, "#/mas");
+}
+function editarPersonal(gid, mes) {
+  const g = E.gastosPersonales.find(x => x.id === gid) || { id: "P" + uid(), mes: mes || mesActual(), concepto: "", monto: "", nota: "", nuevo: true };
+  formulario(g.nuevo ? "Nuevo gasto personal" : "Gasto personal", [["concepto", "Concepto"], ["monto", "Monto", "number"], ["mes", "Mes", "month"], ["nota", "Nota"]], g, d => {
+    d.monto = Number(d.monto) || 0;
+    Object.assign(g, d);
+    if (g.nuevo) { delete g.nuevo; E.gastosPersonales.push(g); }
+  });
+  if (!g.nuevo) document.getElementById("hoja-cuerpo").insertAdjacentHTML("beforeend", `<button class="btn sec" onclick="borrarPersonal('${g.id}')">Borrar este gasto</button>`);
+}
+async function borrarPersonal(gid) {
+  if (!confirm("¿Borrar este gasto personal?")) return;
+  E.gastosPersonales = E.gastosPersonales.filter(x => x.id !== gid);
+  await guardar(); cerrarHoja(); render();
 }
 
 /* ===== Reporte para el contador ===== */
@@ -1219,7 +1326,7 @@ function exportarCalendario() {
   const add = (fecha, titulo, rrule) => ev.push(["BEGIN:VEVENT", `UID:${uid()}@rentas`, `DTSTAMP:${fmt(hoyISO())}T000000Z`, `DTSTART;VALUE=DATE:${fmt(fecha)}`, `SUMMARY:${titulo}`,
     rrule ? `RRULE:${rrule}` : "", "BEGIN:VALARM", "TRIGGER:-PT0M", "ACTION:DISPLAY", `DESCRIPTION:${titulo}`, "END:VALARM", "END:VEVENT"].filter(Boolean).join("\r\n"));
   for (const c of activos()) {
-    const l = local(c.localId), n = nombreLocal(l), fin = finContrato(c.inicio, c.meses);
+    const l = local(c.localId), n = nombreLocal(l), fin = finC(c);
     const primera = cargo(c, mesActual());
     add(primera.limite, `Revisar renta ${n} (${c.inquilino.nombre})`, `FREQ=MONTHLY;UNTIL=${fmt(fin)}`);
     add(sumarDias(fin, -E.ajustes.avisoRenovacion), `Renovar contrato ${n}`);
@@ -1269,8 +1376,11 @@ function vRespaldo() {
 }
 function vMas() {
   pantalla("Más", "", `<div class="card menu">
-    <a class="fila" href="#/gastos"><div>${ic("gasto")}Gastos<small>Predial, agua, mantenimiento</small></div>${ic("flecha")}</a>
+    <a class="fila" href="#/avisos"><div>${ic("alerta")}Avisos<small>Contratos por vencer y cosas que no cuadran</small></div>${ic("flecha")}</a>
+    <a class="fila" href="#/gastos"><div>${ic("gasto")}Gastos de los locales<small>Predial, agua, mantenimiento</small></div>${ic("flecha")}</a>
+    <a class="fila" href="#/personales"><div>${ic("gasto")}Gastos personales<small>Aparte de los locales</small></div>${ic("flecha")}</a>
     <a class="fila" href="#/reporte"><div>${ic("gasto")}Reporte para el contador<small>Ingresos, gastos y ganancia</small></div>${ic("flecha")}</a>
+    <a class="fila" href="#/cierre"><div>${ic("pdf")}Cierre de mes<small>Ingresos, gastos y cuentas del mes</small></div>${ic("flecha")}</a>
     <a class="fila" href="#/calendario"><div>${ic("cal")}Calendario de locales<small>Quién paga y cuándo, por mes</small></div>${ic("flecha")}</a>
     <a class="fila" href="#/banco"><div>${ic("banco")}Revisar con el banco<small>Sube tu estado de cuenta</small></div>${ic("flecha")}</a>
     <a class="fila" onclick="exportarCalendario()"><div>${ic("cal")}Recordatorios en mi calendario<small>Rentas, renovaciones y licencias</small></div>${ic("flecha")}</a>
@@ -1316,7 +1426,9 @@ function vAjustes() {
     <label>Nombre de la arrendadora<input name="arrendador" value="${esc(a.arrendador)}"></label>
     <label>Ciudad donde se firman contratos<input name="ciudadFirma" value="${esc(a.ciudadFirma)}"></label>
     <label>Días de gracia (hábiles)<input name="gracia" type="number" inputmode="numeric" value="${esc(a.gracia)}"></label>
-    <label>Recargo por pago tardío ($, 0 = sin recargo)<input name="recargo" type="number" inputmode="decimal" value="${esc(a.recargo)}"></label>
+    <label>Recargo por atraso (% de la renta por mes, contrato: 10)<input name="recargoPct" type="number" inputmode="decimal" step="any" value="${esc(a.recargoPct)}"></label>
+    <label>Responder renovación con (días antes, contrato: 30)<input name="respuestaRenovacion" type="number" inputmode="numeric" value="${esc(a.respuestaRenovacion)}"></label>
+    <label>Propietarias y su domicilio (uno por renglón: Nombre | Domicilio)<textarea name="propietarias" rows="3">${esc(a.propietarias)}</textarea></label>
     <label>Avisar renovación con (días antes)<input name="avisoRenovacion" type="number" inputmode="numeric" value="${esc(a.avisoRenovacion)}"></label>
     <label>Revisar luz si no hay pago en (días)<input name="diasLuz" type="number" inputmode="numeric" value="${esc(a.diasLuz)}"></label>
     <label>Inflación anual para aumento (%, dato de INEGI)<input name="inflacion" type="number" inputmode="decimal" step="any" value="${esc(a.inflacion)}"></label>
@@ -1324,13 +1436,13 @@ function vAjustes() {
     <label>Interés moratorio en pagarés (% mensual, vacío = sin interés)<input name="interesPagare" type="number" inputmode="decimal" step="any" value="${esc(a.interesPagare)}"></label>
     <label>Mensaje de requisitos (WhatsApp)<textarea name="textoRequisitos" rows="6">${esc(a.textoRequisitos)}</textarea></label>
     <label>Documentos para licencia de giro (uno por renglón)<textarea name="docsLicencia" rows="5">${esc(a.docsLicencia)}</textarea></label>
-    <label>Contrato modelo <small>Campos: {INQUILINO} {FIADOR} {LOCAL} {DIRECCION} {GIRO} {RENTA} {RENTA_LETRA} {DEPOSITO} {DIA_PAGO} {INICIO} {FIN} {MESES}…</small><textarea name="plantillaContrato" rows="10">${esc(a.plantillaContrato)}</textarea></label>
+    <label>Contrato modelo <small>Campos: {ARRENDADOR} {INQUILINO} {FIADOR} {LOCAL_DESCRIPCION} {GIRO} {RENTA} {RENTA_LETRA} {IVA} {DEPOSITO} {DIA_PAGO_TEXTO} {DURACION} {INICIO} {FIN}…</small><textarea name="plantillaContrato" rows="10">${esc(a.plantillaContrato)}</textarea></label>
     <label>Pagaré modelo<textarea name="plantillaPagare" rows="8">${esc(a.plantillaPagare)}</textarea></label>
     <button class="btn">Guardar ajustes</button></form>`, "#/mas");
   $("#fa").onsubmit = async ev => {
     ev.preventDefault();
     const d = Object.fromEntries(new FormData(ev.target));
-    for (const k of ["gracia", "recargo", "avisoRenovacion", "diasLuz", "inflacion", "mesesContrato"]) d[k] = Number(d[k]) || 0;
+    for (const k of ["gracia", "recargoPct", "respuestaRenovacion", "avisoRenovacion", "diasLuz", "inflacion", "mesesContrato"]) d[k] = Number(d[k]) || 0;
     Object.assign(E.ajustes, d); await guardar();
     alert("✅ Guardado"); location.hash = "#/mas";
   };
@@ -1506,7 +1618,7 @@ function vDrive() {
 let filtroCal = "todas";
 // Contrato que cubre un mes (de la primera renta a su último mes).
 function contratoDeMes(l, m) {
-  return E.contratos.find(c => c.localId === l.id && m >= (c.cobrarDesde || c.inicio.slice(0, 7)) && m <= finContrato(c.inicio, c.meses).slice(0, 7));
+  return E.contratos.find(c => c.localId === l.id && m >= (c.cobrarDesde || c.inicio.slice(0, 7)) && m <= finC(c).slice(0, 7));
 }
 function vCalendario(arg) {
   const base = /^\d{4}-\d{2}$/.test(arg || "") ? arg : sumarMeses(mesActual(), -2);
@@ -1526,7 +1638,7 @@ function vCalendario(arg) {
     const tono = { Pagado: "ok", Atrasado: "mal", Parcial: "ojo", Pendiente: "pend" }[x.estado];
     const etiqueta = { Pagado: "Pagó", Atrasado: "Debe", Parcial: "Parcial", Pendiente: "Pendiente" }[x.estado];
     const ini = m === (c.cobrarDesde || c.inicio.slice(0, 7)) ? " ini" : "";
-    const fin = m === finContrato(c.inicio, c.meses).slice(0, 7) ? " fin" : "";
+    const fin = m === finC(c).slice(0, 7) ? " fin" : "";
     return `<td class="cal-c"><span class="bar ${tono}${ini}${fin}" role="button" tabindex="0" onclick="detalleCargo('${c.id}','${m}')" title="${esc(c.inquilino.nombre)} · ${esc(etiqueta)}">${etiqueta}</span></td>`;
   };
   const filas = E.plazas.filter(p => filtroCal === "todas" || p.id === filtroCal).map(p => {
@@ -1553,6 +1665,106 @@ function vCalendario(arg) {
   if (hoyTh) caja.scrollLeft += hoyTh.getBoundingClientRect().left - caja.querySelector("th").getBoundingClientRect().right;
 }
 
+/* ================= Cierre de mes ================= */
+// Cuentas de un mes: lo que entró por pagos, lo que salió y lo que se debe.
+function cierreDe(mes) {
+  const rentas = activos().filter(c => mesesCobro(c, mes).includes(mes)).map(c => ({ c, x: cargo(c, mes), l: local(c.localId) }));
+  const esperado = rentas.reduce((s, r) => s + r.x.total, 0);
+  const cobradoRentas = rentas.reduce((s, r) => s + Math.min(r.x.pagado, r.x.total), 0);
+  const pagosMes = E.pagos.filter(p => (p.fecha || "").startsWith(mes) && E.contratos.some(c => c.id === p.contratoId));
+  const gastosMes = E.gastos.filter(g => g.pagado && (g.fecha || "").startsWith(mes));
+  const repMes = E.reparaciones.filter(r => r.quienPaga !== "Inquilino" && (r.fecha || "").startsWith(mes));
+  // Meses del Excel «Cierre de Mes» (antes de la app): lo cobrado y los gastos de locales como estaban anotados.
+  const hist = (E.historico || {})[mes];
+  const histIngresos = hist ? hist.ingresos.reduce((s, x) => s + Number(x.monto || 0), 0) : 0;
+  const histGastos = hist ? hist.gastos.reduce((s, x) => s + Number(x.monto || 0), 0) : 0;
+  const ingresos = pagosMes.reduce((s, p) => s + Number(p.monto || 0), 0) + histIngresos;
+  const gastos = gastosMes.reduce((s, g) => s + Number(g.monto || 0), 0) + histGastos;
+  const reparaciones = repMes.reduce((s, r) => s + Number(r.costo || 0), 0);
+  const personalesLista = (E.gastosPersonales || []).filter(g => g.mes === mes).map(g => ({ concepto: g.concepto, monto: Number(g.monto || 0), nota: g.nota || "" }));
+  const personales = personalesLista.reduce((s, g) => s + g.monto, 0);
+  return {
+    mes, esperado, cobradoRentas, falta: esperado - cobradoRentas, ingresos, gastos, reparaciones, utilidad: ingresos - gastos - reparaciones,
+    personales, personalesLista, porEntregar: ingresos - gastos - reparaciones - personales,
+    historico: hist ? { ingresos: hist.ingresos, gastos: hist.gastos, entregado: hist.entregado, nota: hist.nota || "" } : null,
+    rentas: rentas.map(r => ({ local: nombreLocal(r.l), inquilino: r.c.inquilino.nombre, renta: r.x.renta, recargo: r.x.recargo, total: r.x.total, pagado: r.x.pagado, saldo: r.x.saldo, estado: r.x.estado })),
+    pagos: pagosMes.map(p => ({ fecha: p.fecha, local: nombreLocal(local(E.contratos.find(c => c.id === p.contratoId).localId)), inquilino: E.contratos.find(c => c.id === p.contratoId).inquilino.nombre, mesRenta: p.mes, monto: Number(p.monto || 0), forma: p.forma || "" })),
+    gastosLista: gastosMes.map(g => ({ fecha: g.fecha, concepto: g.concepto, plaza: plaza(g.plazaId).nombre, monto: Number(g.monto || 0) })),
+    reparacionesLista: repMes.map(r => ({ fecha: r.fecha, titulo: r.titulo, local: nombreLocal(local(r.localId)), costo: Number(r.costo || 0) })),
+  };
+}
+const cierreGuardado = mes => (E.cierres || {})[mes];
+// Lo que se muestra: el cierre guardado (si ya se cerró) o las cuentas al día.
+const cierreVista = mes => cierreGuardado(mes) || cierreDe(mes);
+async function cerrarMes(mes) {
+  const d = cierreDe(mes);
+  if (!confirm(`¿Cerrar ${nombreMes(mes)}?\n\nIngresos: ${pesos(d.ingresos)}\nGastos: ${pesos(d.gastos)}\nReparaciones: ${pesos(d.reparaciones)}\nUtilidad: ${pesos(d.utilidad)}\nFalta cobrar: ${pesos(d.falta)}\n\nSe guarda una copia de estas cuentas. Después se puede reabrir.`)) return;
+  E.cierres[mes] = { ...d, cerradoEn: new Date().toISOString() };
+  await guardar(); render();
+}
+async function reabrirMes(mes) {
+  if (!confirm(`¿Reabrir ${nombreMes(mes)}? Se borra la copia guardada y las cuentas vuelven a calcularse.`)) return;
+  delete E.cierres[mes];
+  await guardar(); render();
+}
+function cierreCSV(d) {
+  const filas = [[`Cierre ${nombreMes(d.mes)}`], [], ["RESUMEN"], ["Ingresos (pagos recibidos)", d.ingresos], ["Gastos pagados", d.gastos], ["Reparaciones", d.reparaciones], ["Utilidad", d.utilidad], [],
+    ["RENTAS DEL MES"], ["Local", "Inquilino", "Renta", "Recargo", "Total", "Pagado", "Saldo", "Estado"], ...d.rentas.map(r => [r.local, r.inquilino, r.renta, r.recargo, r.total, r.pagado, r.saldo, r.estado]),
+    ["Total esperado", "", "", "", d.esperado, d.cobradoRentas, d.falta, ""], [],
+    ["PAGOS RECIBIDOS"], ["Fecha", "Local", "Inquilino", "Renta de", "Monto", "Forma"], ...d.pagos.map(p => [p.fecha, p.local, p.inquilino, p.mesRenta, p.monto, p.forma]), [],
+    ["GASTOS"], ["Fecha", "Concepto", "Plaza", "Monto"], ...d.gastosLista.map(g => [g.fecha, g.concepto, g.plaza, g.monto]), [],
+    ["REPARACIONES"], ["Fecha", "Trabajo", "Local", "Costo"], ...d.reparacionesLista.map(r => [r.fecha, r.titulo, r.local, r.costo]), [],
+    ...(d.historico ? [["COBRADO SEGÚN EL EXCEL"], ["Plaza", "Concepto", "Monto", "Nota"], ...d.historico.ingresos.map(x => [x.plaza, x.concepto, x.monto, x.nota]), ["GASTOS SEGÚN EL EXCEL"], ...d.historico.gastos.map(g => ["", g.concepto, g.monto, g.nota]), []] : []),
+    ["GASTOS PERSONALES"], ["Concepto", "Monto", "Nota"], ...(d.personalesLista || []).map(g => [g.concepto, g.monto, g.nota]), ["Total personales", d.personales || 0], ["Queda por entregar", d.porEntregar ?? d.utilidad]];
+  return csv(filas);
+}
+function exportarCierreCSV(mes) {
+  const d = cierreVista(mes);
+  compartirArchivo(new File([cierreCSV(d)], `Cierre ${mes}.csv`, { type: "text/csv" }), "Cierre " + nombreMes(mes));
+}
+function exportarCierrePDF(mes) {
+  const d = cierreVista(mes);
+  const L = [`Ingresos (pagos recibidos): ${pesos(d.ingresos)}`, `Gastos pagados: ${pesos(d.gastos)}`, `Reparaciones: ${pesos(d.reparaciones)}`, `Utilidad: ${pesos(d.utilidad)}`, "",
+    "RENTAS DEL MES", `Esperado: ${pesos(d.esperado)} · Cobrado: ${pesos(d.cobradoRentas)} · Falta: ${pesos(d.falta)}`, ...d.rentas.map(r => `• ${r.local} · ${r.inquilino}: total ${pesos(r.total)}, pagado ${pesos(r.pagado)}, saldo ${pesos(r.saldo)} (${r.estado})`), "",
+    "PAGOS RECIBIDOS", ...(d.pagos.length ? d.pagos.map(p => `• ${fechaBonita(p.fecha)} · ${p.local} · ${p.inquilino} · ${pesos(p.monto)} (${p.forma})`) : ["Ninguno"]), "",
+    "GASTOS", ...(d.gastosLista.length ? d.gastosLista.map(g => `• ${fechaBonita(g.fecha)} · ${g.concepto} · ${g.plaza} · ${pesos(g.monto)}`) : ["Ninguno"]), "",
+    "REPARACIONES", ...(d.reparacionesLista.length ? d.reparacionesLista.map(r => `• ${fechaBonita(r.fecha)} · ${r.titulo} · ${r.local} · ${pesos(r.costo)}`) : ["Ninguna"]), "",
+    ...(d.historico ? ["COBRADO SEGÚN EL EXCEL", ...d.historico.ingresos.map(x => `• ${x.plaza} · ${x.concepto}: ${pesos(x.monto)}${x.nota ? " (" + x.nota + ")" : ""}`), ...d.historico.gastos.map(g => `• Gasto: ${g.concepto} ${pesos(g.monto)}`), ""] : []),
+    "GASTOS PERSONALES", ...((d.personalesLista || []).length ? d.personalesLista.map(g => `• ${g.concepto} · ${pesos(g.monto)}`) : ["Ninguno"]), `Total personales: ${pesos(d.personales || 0)}`, `Queda por entregar: ${pesos(d.porEntregar ?? d.utilidad)}`];
+  const f = pdf("Cierre de " + nombreMes(mes), L.join("\n"), `Cierre ${mes}.pdf`);
+  if (f) compartirArchivo(f, "Cierre " + nombreMes(mes));
+}
+function vCierre(arg) {
+  const mes = /^\d{4}-\d{2}$/.test(arg || "") ? arg : sumarMeses(mesActual(), -1);
+  const cerrado = cierreGuardado(mes), d = cierreVista(mes);
+  const estado = cerrado ? `<span class="chip c-v">Cerrado el ${fechaBonita(cerrado.cerradoEn.slice(0, 10))}</span>` : `<span class="chip c-a">Abierto</span>`;
+  const filaRenta = r => `<div class="fila"><div><b>${esc(r.local)} · ${esc(r.inquilino)}</b><small>Renta ${pesos(r.total)} · pagado ${pesos(r.pagado)}</small></div><span>${r.saldo ? `<b class="rojo">${pesos(r.saldo)}</b>` : chip([r.estado, r.estado === "Pagado" ? "v" : "a"])}</span></div>`;
+  pantalla("Cierre de mes", nombreMes(mes), `
+    <div class="mesnav"><a href="#/cierre/${sumarMeses(mes, -1)}" aria-label="Mes anterior"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></a><b>${nombreMes(mes)}</b><a href="#/cierre/${sumarMeses(mes, 1)}" aria-label="Mes siguiente">${ic("flecha")}</a></div>
+    <p style="text-align:center;margin:0 0 10px">${estado}</p>
+    <div class="cifras">
+      <div><span>Ingresos</span><b>${pesos(d.ingresos)}</b></div>
+      <div><span>Gastos</span><b>${pesos(d.gastos)}</b></div>
+      <div><span>Utilidad</span><b>${pesos(d.utilidad)}</b></div>
+    </div>
+    <h2>Rentas del mes</h2>
+    <div class="card"><div class="dato"><span>Esperado</span><b>${pesos(d.esperado)}</b></div><div class="dato"><span>Cobrado</span><b>${pesos(d.cobradoRentas)}</b></div><div class="dato"><span>Falta</span><b class="${d.falta ? "rojo" : ""}">${pesos(d.falta)}</b></div></div>
+    <div class="card">${d.rentas.length ? d.rentas.map(filaRenta).join("") : '<div class="vacio">No hubo rentas este mes</div>'}</div>
+    <h2>Pagos recibidos (${d.pagos.length})</h2>
+    <div class="card">${d.pagos.length ? d.pagos.map(p => `<div class="fila"><div><b>${esc(p.inquilino)}</b><small>${fechaBonita(p.fecha)} · ${esc(p.local)} · ${esc(p.forma)}</small></div><span>${pesos(p.monto)}</span></div>`).join("") : '<div class="vacio">Sin pagos</div>'}</div>
+    ${d.historico ? `<h2>Cobrado según el Excel (${d.historico.ingresos.length})</h2><div class="card">${d.historico.ingresos.map(x => `<div class="fila"><div><b>${esc(x.concepto)}</b><small>${esc(x.plaza)}${x.nota ? " · " + esc(x.nota) : ""}</small></div><span>${x.monto ? pesos(x.monto) : chip(["Sin pago", "a"])}</span></div>`).join("")}${d.historico.entregado ? `<div class="dato"><span>Entregado según el Excel</span><b>${pesos(d.historico.entregado)}</b></div>` : ""}</div>` : ""}
+    <h2>Gastos de los locales y reparaciones</h2>
+    <div class="card">${[...d.gastosLista.map(g => ({ t: g.concepto, s: `${g.plaza} · ${fechaBonita(g.fecha)}`, m: g.monto })), ...d.reparacionesLista.map(r => ({ t: r.titulo, s: `${r.local} · ${fechaBonita(r.fecha)}`, m: r.costo }))].concat((d.historico ? d.historico.gastos : []).map(g => `<div class="fila"><div><b>${esc(g.concepto)}</b><small>Del Excel${g.nota ? " · " + esc(g.nota) : ""}</small></div><span>${pesos(g.monto)}</span></div>`)).map(x => typeof x === "string" ? x : `<div class="fila"><div><b>${esc(x.t)}</b><small>${esc(x.s)}</small></div><span>${pesos(x.m)}</span></div>`).join("") || '<div class="vacio">Sin gastos</div>'}</div>
+    <h2>Gastos personales (${(d.personalesLista || []).length})</h2>
+    <div class="card">${(d.personalesLista || []).map(g => `<div class="fila"><div><b>${esc(g.concepto)}</b>${g.nota ? `<small>${esc(g.nota)}</small>` : ""}</div><span>${pesos(g.monto)}</span></div>`).join("") || '<div class="vacio">Sin gastos personales</div>'}
+      <div class="dato"><span>Total personales</span><b>${pesos(d.personales || 0)}</b></div><div class="dato"><span>Queda por entregar</span><b>${pesos(d.porEntregar ?? d.utilidad)}</b></div>
+      <a class="btn sec chico" href="#/personales/${mes}">Ver o agregar gastos personales</a></div>
+    ${cerrado ? `<button class="btn sec" onclick="reabrirMes('${mes}')">${ic("ajustes")}Reabrir el mes</button>` : `<button class="btn" onclick="cerrarMes('${mes}')">${ic("pdf")}Cerrar el mes</button>`}
+    <button class="btn sec" onclick="exportarCierrePDF('${mes}')">${ic("pdf")}PDF del cierre</button>
+    <button class="btn sec" onclick="exportarCierreCSV('${mes}')">${ic("gasto")}Excel (CSV) del cierre</button>
+    <p class="sub" style="font-weight:400">Ingresos = pagos recibidos en el mes. Al cerrar se guarda una copia que no cambia aunque después edites pagos de ese mes.</p>`, "#/mas");
+}
+
 /* ================= Rutas ================= */
 function render() {
   const [ruta, arg] = location.hash.replace(/^#\/?/, "").split("?")[0].split("/");
@@ -1560,10 +1772,12 @@ function render() {
   const vistas = {
     inicio: vInicio, locales: () => vLocales(false), vacios: () => vLocales(true), local: () => vLocal(arg),
     pagos: () => vPagos(arg), rentar: () => vRentar(arg, q.has("existente")), gastos: vGastos, reporte: () => vReporte(arg),
-    banco: vBanco, respaldo: vRespaldo, drive: vDrive, calendario: () => vCalendario(arg), mas: vMas, ajustes: vAjustes, plazas: vPlazas,
+    banco: vBanco, respaldo: vRespaldo, drive: vDrive, calendario: () => vCalendario(arg), cierre: () => vCierre(arg), mas: vMas, ajustes: vAjustes, plazas: vPlazas,
+    avisos: vAvisos, personales: () => vPersonales(arg),
   };
   (vistas[ruta] || vInicio)();
-  const tab = { local: "locales", vacios: "inicio", rentar: "locales", gastos: "mas", reporte: "mas", banco: "mas", respaldo: "mas", drive: "mas", calendario: "pagos", ajustes: "mas", plazas: "mas" }[ruta] || ruta || "inicio";
+  const tab = { local: "locales", vacios: "inicio", rentar: "locales", gastos: "mas", reporte: "mas", banco: "mas", respaldo: "mas", drive: "mas", calendario: "pagos", cierre: "mas", ajustes: "mas", plazas: "mas", avisos: "inicio", personales: "mas" }[ruta] || ruta || "inicio";
+  pintarCampana();
   document.querySelectorAll("nav a").forEach(a => a.classList.toggle("on", a.dataset.t === tab));
 }
 let rutaAnterior = "";
