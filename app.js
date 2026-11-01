@@ -75,6 +75,8 @@ function migrar(e) {
   for (const l of e.locales) if (!l.fotosLicencia) l.fotosLicencia = [];
   if (!e.driveFotos) e.driveFotos = {};
   if (!e.cierres) e.cierres = {};
+  // Quita «Al firmar» del mensaje de requisitos, también en celulares que ya lo tenían guardado.
+  if (a.textoRequisitos && a.textoRequisitos.includes(TEXTO_REQUISITOS_ANTERIOR_FIRMAR)) a.textoRequisitos = a.textoRequisitos.replace(TEXTO_REQUISITOS_ANTERIOR_FIRMAR, "");
   if (!e.gastosPersonales) e.gastosPersonales = [];
   if (!e.avisos) e.avisos = [];
   if (!e.historico) e.historico = {};
@@ -232,7 +234,6 @@ function estadoLocal(l) {
   if (atrasos(c).length) return ["Atrasado", "r"];
   const dias = diasEntre(hoyISO(), finC(c));
   if (dias < 0) return ["Contrato vencido", "r"];
-  if (l.licencia !== "Sí") return ["Sin licencia", "a"];
   if (dias <= E.ajustes.avisoRenovacion) return ["Renovar", "a"];
   return ["Al corriente", "v"];
 }
@@ -252,11 +253,6 @@ function alertas() {
     const fin = finC(c), dias = diasEntre(hoy, fin);
     if (dias < 0) A.push(["r", "Contrato vencido", `${n} · venció ${fechaBonita(fin)}`, ir, [c.id, "renovar"]]);
     else if (dias <= E.ajustes.avisoRenovacion) A.push(["a", `Contrato vence en ${dias} días`, `${n} · renta sugerida ${pesos(rentaSugerida(c))}`, ir, [c.id, "renovar"]]);
-    if (l.licencia !== "Sí") A.push(["r", "Sin licencia de giro", `${n} · ${c.inquilino.nombre}`, ir, [c.id, "licencia"]]);
-    else if (l.licenciaVence && l.licenciaVence < hoy) A.push(["r", "Licencia de giro vencida", n, ir, [c.id, "licencia"]]);
-    else if (l.licenciaVence && diasEntre(hoy, l.licenciaVence) <= 30) A.push(["a", "Licencia de giro por vencer", `${n} · ${fechaBonita(l.licenciaVence)}`, ir, [c.id, "licencia"]]);
-    if (!l.luz) A.push(["a", "Luz: falta confirmar pago", n, ir, [c.id, "luz"]]);
-    else if (diasEntre(l.luz, hoy) > E.ajustes.diasLuz) A.push(["a", "Luz: revisar pago", `${n} · último ${fechaBonita(l.luz)}`, ir, [c.id, "luz"]]);
     const f = expedienteFaltan(c);
     if (f.length) A.push(["a", "Expediente incompleto", `${n} · falta: ${f.map(d => d.nombre.replace(/ del (inquilino|fiador)/, "")).slice(0, 2).join(", ")}${f.length > 2 ? "…" : ""}`, ir, docsQuePide(c).length ? [c.id, "documentos"] : null]);
     if (ineVencida(c)) A.push(["r", "INE vencida", n, ir, [c.id, "ine"]]);
@@ -362,7 +358,44 @@ async function pintarMiniaturas(root = document) {
     if (b) im.src = URL.createObjectURL(b);
   }
 }
-const miniaturas = ids => (ids || []).map(id => `<img class="mini" data-foto="${id}" onclick="verFoto('${id}')" alt="foto">`).join("");
+// INE: solo dos casillas, frente y vuelta. Tocar la casilla sube o cambia esa foto.
+const esINE = k => k === "ineInq" || k === "ineFia";
+function casillasINE(x, accion) {
+  const una = (lado, et) => {
+    const id = x && x[lado];
+    return `<button class="ine-casilla${id ? " llena" : ""}" onclick="${accion}('${lado}')" aria-label="${id ? "Cambiar" : "Subir"} ${et.toLowerCase()} de la INE">
+      ${id ? `<img class="mini" data-foto="${id}" alt="${et} de la INE">` : ic("foto")}<span>${et}</span></button>`;
+  };
+  return `<div class="ine-casillas">${una("frente", "Frente")}${una("vuelta", "Vuelta")}</div>`;
+}
+// Pone la foto en su casilla. Si trae los dos lados, la separa; si es del otro lado, la cambia de casilla.
+async function acomodarINE(x, lado, blob, avance = () => {}) {
+  let sep = { lado: "" };
+  try { sep = await separarINE(blob, avance); } catch (e) { /* sin lector (sin internet): se queda donde la puso */ }
+  const guarda = async b => { const id = "F" + uid(); await ponerFoto(id, b); return id; };
+  if (sep.lado === "ambos") { x.frente = await guarda(sep.frente); x.vuelta = await guarda(sep.vuelta); }
+  else {
+    const otro = lado === "frente" ? "vuelta" : "frente";
+    const destino = sep.lado && sep.lado !== lado && !x[otro] ? otro : lado;
+    x[destino] = await guarda(blob);
+  }
+  x.fotos = [x.frente, x.vuelta].filter(Boolean);
+  x.ok = x.fotos.length > 0;
+  return sep.lado;
+}
+async function pedirUnaFoto() {
+  return new Promise(ok => {
+    const i = document.createElement("input");
+    i.type = "file"; i.accept = "image/*";
+    i.onchange = async () => ok(i.files[0] ? await comprimir(i.files[0], 2400, 0.85) : null);
+    i.click();
+  });
+}
+// Cuántas fotos se piden de cada cosa (no deja subir más).
+const MAX_FOTOS = { compInq: 1, compFia: 1, pagRenta: 2, pagDep: 2, contrato: 6, fotosLicencia: 3, fotosEntrega: 3, fotosRecepcion: 3, inePropietaria: 2 };
+const cabeFoto = (k, fotos) => (fotos || []).filter(Boolean).length < (MAX_FOTOS[k] || 99);
+const botonFoto = (k, fotos, accion, et = "Agregar foto") => (cabeFoto(k, fotos) ? `<button class="mas-foto" aria-label="${et}" onclick="${accion}">${ic("foto")}</button>` : "");
+const miniaturas = ids => (ids || []).filter(Boolean).map(id => `<img class="mini" data-foto="${id}" onclick="verFoto('${id}')" alt="foto">`).join("");
 async function verFoto(id) {
   const b = await leerFoto(id);
   if (!b) return;
@@ -518,7 +551,6 @@ function mensajesWA(cid) {
   const c = E.contratos.find(x => x.id === cid), l = local(c.localId);
   const ops = [];
   if (atrasos(c).length) ops.push(["atraso", "Recordar renta pendiente"]);
-  ops.push(["luz", "Pedir recibo de luz"], ["licencia", "Preguntar por su licencia de giro"]);
   if (docsQuePide(c).length) ops.push(["documentos", "Pedir documentos que faltan"]);
   if (ineVencida(c)) ops.push(["ine", "Pedir INE vigente"]);
   ops.push(["renovar", "Avisar renovación de contrato"], ["libre", "Mensaje libre"]);
@@ -598,13 +630,12 @@ function vInicio() {
 function guiaArranque() {
   const rentados = E.locales.filter(l => l.estado === "rentado");
   const faltan = rentados.filter(l => !contratoActivo(l.id));
-  const ine = (E.ajustes.inePropietaria || []).length > 0, drv = driveConectado();
-  if (!faltan.length && ine && drv) return "";
+  const drv = driveConectado();
+  if (!faltan.length && drv) return "";
   const listos = rentados.length - faltan.length, pct = rentados.length ? Math.round((listos / rentados.length) * 100) : 100;
   const paso = (ok, texto, ir) => `<a class="guia-paso${ok ? " ok" : ""}" href="${ir}"><span class="guia-check">${ok ? '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>' : ""}</span><span>${texto}</span>${ok ? "" : ic("flecha")}</a>`;
   const sig = faltan[0];
   return `<section class="guia"><b>Para arrancar</b>
-    ${paso(ine, "Sube tu INE", "#/ajustes")}
     ${paso(drv, "Conecta tu Google Drive", "#/drive")}
     ${paso(!faltan.length, `Captura a tus inquilinos · ${listos} de ${rentados.length}`, sig ? "#/rentar/" + sig.id + "?existente=1" : "#/locales")}
     <div class="barra"><i style="width:${pct}%"></i></div>
@@ -684,17 +715,6 @@ function vLocal(id) {
       <div class="dos"><button class="btn" onclick="registrarPago('${c.id}')">Registrar pago</button><button class="btn wa" onclick="mensajesWA('${c.id}')">${ic("wa")}WhatsApp</button></div>
       <button class="btn sec chico" onclick="editarContrato('${c.id}')">Editar datos del inquilino</button></div>`;
 
-    // Avisos rápidos
-    const luzVieja = !l.luz || diasEntre(l.luz, hoyISO()) > E.ajustes.diasLuz;
-    h += `<h2>Al día</h2><div class="card">
-      <div class="chk"><span><b>Licencia de giro</b><small>${l.licenciaVence ? "Vence " + fechaBonita(l.licenciaVence) : "Sin fecha de vencimiento"}</small></span>
-        <div class="seg" role="group" aria-label="Licencia de giro">${[["No", "No"], ["En trámite", "Trámite"], ["Sí", "Sí"]].map(([v, t]) => `<button class="${l.licencia === v ? "on" : ""}" onclick="cambiarLocal('${id}','licencia','${v}')">${t}</button>`).join("")}</div></div>
-      <div class="chk"><span>Vence licencia</span><input type="date" value="${l.licenciaVence}" onchange="cambiarLocal('${id}','licenciaVence',this.value)" aria-label="Vence licencia"></div>
-      <div class="chk"><span><b>Recibo de luz</b><small class="${luzVieja ? "rojo" : ""}">${l.luz ? "Pagado el " + fechaBonita(l.luz) : "Sin confirmar"}</small></span>
-        <button class="btn sec chico" style="width:auto;margin:0;padding:0 14px" onclick="cambiarLocal('${id}','luz','${hoyISO()}')">Ya pagó hoy</button></div>
-      <div class="chk"><span>Otra fecha de pago de luz</span><input type="date" value="${l.luz}" onchange="cambiarLocal('${id}','luz',this.value)" aria-label="Fecha de pago de luz"></div>
-      <button class="btn sec chico" onclick="docsLicencia('${c.id}')">${ic("doc")}Mandar docs para su licencia</button></div>`;
-
     // Expediente
     h += `<h2>Expediente · ${DOCS_EXPEDIENTE.length - expedienteFaltan(c).length} de ${DOCS_EXPEDIENTE.length}</h2><div class="card">` +
       DOCS_EXPEDIENTE.map(d => {
@@ -703,9 +723,9 @@ function vLocal(id) {
         if (d.vigencia && x.vigencia) extra = ` · vigencia ${x.vigencia}`;
         if (d.fecha && x.fecha) extra = ` · ${fechaBonita(x.fecha)}`;
         return `<div class="doc"><div class="chk"><span>${esc(d.nombre)}<small>${extra}</small></span><span class="acc">
-          ${d.foto ? `<button class="cam" onclick="fotoDoc('${c.id}','${d.id}')" aria-label="Foto de ${esc(d.nombre)}">${ic("foto")}</button>` : ""}
+          ${d.foto && !esINE(d.id) && cabeFoto(d.id, x.fotos) ? `<button class="cam" onclick="fotoDoc('${c.id}','${d.id}')" aria-label="Foto de ${esc(d.nombre)}">${ic("foto")}</button>` : ""}
           <input type="checkbox" ${x.ok ? "checked" : ""} onchange="marcarDoc('${c.id}','${d.id}',this.checked)" aria-label="Entregado"></span></div>
-          ${x.fotos && x.fotos.length ? `<div class="fotos">${miniaturas(x.fotos)}</div>` : ""}</div>`;
+          ${esINE(d.id) ? casillasINE(x.frente || x.vuelta ? x : { frente: (x.fotos || [])[0], vuelta: (x.fotos || [])[1] }, "fotoINEDoc.bind(null,'" + c.id + "','" + d.id + "')") : x.fotos && x.fotos.length ? `<div class="fotos">${miniaturas(x.fotos)}</div>` : ""}</div>`;
       }).join("") + `</div>`;
 
     // Contrato
@@ -729,14 +749,16 @@ function vLocal(id) {
     }).join("") : '<div class="vacio">Aún no hay meses por cobrar</div>'}</div>`;
   }
 
-  // Fotos del local
+  // Documentos para su licencia (Sandra los junta y los manda por WhatsApp; no se da seguimiento)
   const fl = l.fotosLicencia || [];
-  h += `<h2>Fotos para licencia · ${Math.min(fl.length, 3)} de 3</h2><div class="card">
-    <p class="sub" style="margin-top:4px">Frente y los dos costados, que se vean los vecinos.</p>
-    <div class="fotos">${miniaturas(fl)}${fl.length < 3 ? `<button class="mas-foto" aria-label="Agregar foto para licencia" onclick="fotoLocal('${id}','fotosLicencia')">${ic("foto")}</button>` : ""}</div></div>`;
+  h += `<h2>Documentos para su licencia</h2><div class="card">
+    <div class="sub">3 fotos del local: frente y los dos costados, que se vean los vecinos</div>
+    <div class="fotos">${miniaturas(fl)}${botonFoto("fotosLicencia", fl, `fotoLocal('${id}','fotosLicencia')`, "Agregar foto para licencia")}</div>
+    ${c ? `<button class="btn wa" onclick="docsLicencia('${c.id}')">${ic("wa")}Mandar documentos por WhatsApp</button>` : ""}</div>`;
+  // Fotos del local
   h += `<h2>Fotos del local</h2><div class="card">
-    <div class="sub">Al entregarlo</div><div class="fotos">${miniaturas(l.fotosEntrega)}<button class="mas-foto" aria-label="Agregar foto" onclick="fotoLocal('${id}','fotosEntrega')">${ic("foto")}</button></div>
-    <div class="sub">Al recibirlo</div><div class="fotos">${miniaturas(l.fotosRecepcion)}<button class="mas-foto" aria-label="Agregar foto" onclick="fotoLocal('${id}','fotosRecepcion')">${ic("foto")}</button></div></div>`;
+    <div class="sub">Al entregarlo</div><div class="fotos">${miniaturas(l.fotosEntrega)}${botonFoto("fotosEntrega", l.fotosEntrega, `fotoLocal('${id}','fotosEntrega')`)}</div>
+    <div class="sub">Al recibirlo</div><div class="fotos">${miniaturas(l.fotosRecepcion)}${botonFoto("fotosRecepcion", l.fotosRecepcion, `fotoLocal('${id}','fotosRecepcion')`)}</div></div>`;
 
   // Reparaciones
   const reps = E.reparaciones.filter(r => r.localId === id);
@@ -852,6 +874,9 @@ function vRentar(id, existente) {
   const b = borrador;
   const fotoBtn = (k, et) => {
     const fotos = b.docs[k]?.fotos || [];
+    if (esINE(k)) return `<div class="doc"><div class="chk"><span>${et}</span><span>${b.docs[k]?.frente && b.docs[k]?.vuelta ? "✅" : ""}</span></div>
+      ${casillasINE(b.docs[k], "fotoINEBorrador.bind(null,'" + k + "')")}</div>`;
+    if (!cabeFoto(k, fotos)) return `<div class="doc"><div class="chk"><span>${et}</span><span>✅</span></div><div class="fotos">${miniaturas(fotos)}<button class="mas-foto" aria-label="Cambiar foto" onclick="borrador.docs['${k}'].fotos=[];fotoBorrador('${k}')">↺</button></div></div>`;
     return `<div class="doc"><div class="chk"><span>${et}</span><span>${fotos.length ? "✅" : ""}</span></div>
       <div class="fotos">${miniaturas(fotos)}<button class="mas-foto" aria-label="Agregar foto" onclick="fotoBorrador('${k}')">${ic("foto")}</button></div></div>`;
   };
@@ -860,8 +885,8 @@ function vRentar(id, existente) {
     ${existente ? "" : `<div class="paso"><div class="n">1</div><div><b>Manda los requisitos</b><p>Por WhatsApp, con la lista de documentos.</p></div></div>
     <button class="btn wa" onclick="whatsappRequisitos()">${ic("wa")}Mandar requisitos por WhatsApp</button>`}
     <div class="paso"><div class="n">${existente ? 1 : 2}</div><div><b>Sube las fotos de sus documentos</b><p>Toma foto o elige de tu galería. Puedes hacerlo después.</p></div></div>
-    <div class="card">${fotoBtn("ineInq", "INE del inquilino (frente y vuelta)")}${fotoBtn("compInq", "Comprobante de domicilio del inquilino")}
-    ${fotoBtn("ineFia", "INE del fiador (frente y vuelta)")}${fotoBtn("compFia", "Comprobante de domicilio del fiador")}
+    <div class="card">${fotoBtn("ineInq", "INE del inquilino")}${fotoBtn("compInq", "Comprobante de domicilio del inquilino")}
+    ${fotoBtn("ineFia", "INE del fiador")}${fotoBtn("compFia", "Comprobante de domicilio del fiador")}
     <button class="btn sec" onclick="leerINEs()">${ic("buscar")}Leer datos de las INE</button><p class="sub" id="ocr"></p></div>
     <div class="paso"><div class="n">${existente ? 2 : 3}</div><div><b>Revisa los datos</b><p>Corrige lo que haga falta.</p></div></div>
     <form id="fr" class="card">
@@ -908,9 +933,7 @@ function vRentar(id, existente) {
     if (!existente) setTimeout(() => hoja(`<div class="ok">✅ Inquilino guardado</div>
       <div class="paso"><div class="n">4</div><div><b>Contrato y pagarés</b><p>Se llenan solos. Compártelos o imprímelos para firmar.</p></div></div>
       <button class="btn" onclick="compartirContrato('${c.id}')">${ic("pdf")}Contrato PDF</button>
-      <button class="btn" onclick="compartirPagares('${c.id}')">${ic("pdf")}Pagarés PDF</button>
-      <div class="paso"><div class="n">5</div><div><b>Documentos para su licencia de giro</b></div></div>
-      <button class="btn wa" onclick="docsLicencia('${c.id}')">Mandar docs de licencia</button>`, "Siguiente paso"), 200);
+      <button class="btn" onclick="compartirPagares('${c.id}')">${ic("pdf")}Pagarés PDF</button>`, "Siguiente paso"), 200);
   };
 }
 function leerBorrador() {
@@ -920,9 +943,21 @@ function leerBorrador() {
   for (const k of ["nombre", "tel", "domicilio", "curp"]) b.fiador[k] = (d["f_" + k] || "").trim();
   Object.assign(b, { giro: d.giro, renta: Number(d.renta) || "", deposito: Number(d.deposito) || "", diaPago: Number(d.diaPago) || 1, inicio: d.inicio, meses: Number(d.meses) || 12, cobrarDesde: d.cobrarDesde });
 }
+async function fotoINEBorrador(k, lado) {
+  if ($("#fr")) leerBorrador();
+  const blob = await pedirUnaFoto();
+  if (!blob) return;
+  const msg = m => { const o = $("#ocr"); if (o) o.textContent = m; };
+  msg("Acomodando la foto…");
+  const x = (borrador.docs[k] = borrador.docs[k] || { ok: false, fotos: [] });
+  const r = await acomodarINE(x, lado, blob);
+  render();
+  if (x.frente && x.vuelta) leerINEs(); // con los dos lados, se leen solas
+  else msg(r === "ambos" ? "" : `Ahora sube la ${x.frente ? "vuelta" : "frente"} de la INE.`);
+}
 async function fotoBorrador(k) {
   if ($("#fr")) leerBorrador();
-  const ids = await pedirFotos();
+  const ids = (await pedirFotos((MAX_FOTOS[k] || 99) > 1)).slice(0, (MAX_FOTOS[k] || 99) - (borrador.docs[k]?.fotos || []).length);
   if (!ids.length) return;
   const d = (borrador.docs[k] = borrador.docs[k] || { ok: false, fotos: [] });
   d.fotos.push(...ids); d.ok = true;
@@ -943,29 +978,228 @@ function cargarOCR() {
     document.head.appendChild(s);
   }));
 }
-function interpretarINE(texto) {
-  const t = texto.toUpperCase().replace(/[|]/g, "");
-  const lineas = t.split("\n").map(x => x.trim()).filter(Boolean);
-  const r = {};
-  const curp = t.match(/[A-Z]{4}\d{6}[HM][A-Z]{5}[A-Z0-9]\d/);
-  if (curp) r.curp = curp[0];
-  const vig = t.match(/VIGENCIA\s*(\d{4})(?:\s*-\s*(\d{4}))?/);
-  if (vig) r.vigencia = vig[2] || vig[1];
-  const iN = lineas.findIndex(x => /NOMBRE/.test(x)), iD = lineas.findIndex(x => /DOMICILIO/.test(x));
-  const corte = x => /DOMICILIO|SEXO|CLAVE|CURP|FECHA|SECCI|AÑO|ANO DE|VIGENCIA|ELECTOR|ESTADO|MUNICIPIO|LOCALIDAD|EMISI/.test(x);
-  if (iN >= 0) {
-    const n = [];
-    for (let i = iN + 1; i < lineas.length && n.length < 3 && !corte(lineas[i]); i++) n.push(lineas[i].replace(/[^A-ZÁÉÍÓÚÑ ]/g, "").trim());
-    // En la INE va: apellido paterno, materno, nombre(s). Se guarda nombre primero.
-    const limpio = n.filter(Boolean);
-    if (limpio.length >= 2) r.nombre = [limpio.slice(2).join(" "), limpio[0], limpio[1]].filter(Boolean).join(" ");
+/* ===== Lectura de INE =====
+   Cada foto se endereza (prueba 0°, 90°, 270° y 180°) y se lee varias veces con distinto contraste y acomodo;
+   de cada lectura se sacan los datos y se escoge el mejor por campo. De la vuelta se usa el renglón de máquina
+   (APELLIDO<APELLIDO<<NOMBRE), que casi no falla. La CURP se acepta solo si cuadra su dígito verificador. */
+const CURP_DIC = "0123456789ABCDEFGHIJKLMNÑOPQRSTUVWXYZ";
+const CURP_FORMA = /^[A-Z]{4}\d{6}[HM][A-Z]{5}[A-Z0-9]\d$/;
+function curpValida(c) {
+  if (!CURP_FORMA.test(c)) return false;
+  let suma = 0;
+  for (let i = 0; i < 17; i++) suma += CURP_DIC.indexOf(c[i]) * (18 - i);
+  return (10 - (suma % 10)) % 10 === Number(c[17]);
+}
+// Confusiones típicas del lector, para letras y para números.
+const A_LETRA = { 0: "O", 1: "I", 2: "Z", 4: "A", 5: "S", 6: "G", 8: "B" }, A_DIGITO = { O: "0", Q: "0", D: "0", U: "0", I: "1", L: "1", T: "1", J: "1", Z: "2", S: "5", G: "6", B: "8", A: "4" };
+const PARECIDAS = { I: "JLT1", J: "I", L: "IT", T: "IL", O: "QD0", Q: "O", D: "O", M: "NH", N: "M", H: "MN", U: "V", V: "U", C: "G", G: "C", E: "F", F: "E", P: "R", R: "P", "0": "8", "8": "03", "3": "8", "1": "7", "7": "1", "5": "6", "6": "5" };
+const ESTADOS_CURP = "AS BC BS CC CL CM CS CH DF DG GT GR HG JC MC MN MS NT NL OC PL QT QR SP SL SR TC TS TL VZ YN ZS NE".split(" ");
+// La CURP leída debe parecer CURP de verdad: fecha posible, estado válido y consonantes donde van.
+function curpCreible(c) {
+  const mm = Number(c.slice(6, 8)), dd = Number(c.slice(8, 10));
+  return CURP_FORMA.test(c) && mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31 && ESTADOS_CURP.includes(c.slice(11, 13)) && /^[B-DF-HJ-NP-TV-Z]{3}$/.test(c.slice(13, 16)) && /^[AEIOUX]$/.test(c[1]);
+}
+function curpDeTexto(t) {
+  const limpio = sinAcento(t.toUpperCase()).replace(/[^A-Z0-9\n]/g, "");
+  const letras = [0, 1, 2, 3, 11, 12, 13, 14, 15], digitos = [4, 5, 6, 7, 8, 9, 17];
+  const arreglar = w => {
+    const c = [...w];
+    for (const k of letras) c[k] = A_LETRA[c[k]] || c[k];
+    for (const k of digitos) c[k] = A_DIGITO[c[k]] || c[k];
+    if (c[10] === "N") c[10] = "M";
+    const siglo19 = Number(c[4] + c[5]) > new Date().getFullYear() % 100;
+    c[16] = siglo19 ? A_DIGITO[c[16]] || c[16] : A_LETRA[c[16]] || c[16];
+    return c;
+  };
+  // Primero lo que viene después de la palabra CURP; luego todo el texto.
+  const k0 = limpio.search(/CU[RF]P|CURF|CUR/);
+  const zonas = k0 >= 0 ? [limpio.slice(k0 + 3, k0 + 40), limpio] : [limpio];
+  for (const z of zonas) for (let i = 0; i + 18 <= z.length; i++) {
+    const w = z.slice(i, i + 18);
+    if (w.includes("\n")) continue;
+    const c = arreglar(w), base = c.join("");
+    if (curpValida(base) && curpCreible(base)) return base;
+    if (!CURP_FORMA.test(base)) continue;
+    // Una sola letra o número mal leído: se cambia por su parecido hasta que cuadre el verificador.
+    for (let k = 0; k < 18; k++) for (const alt of PARECIDAS[c[k]] || "") {
+      const prueba = base.slice(0, k) + alt + base.slice(k + 1);
+      if (curpValida(prueba) && curpCreible(prueba)) return prueba;
+    }
   }
-  if (iD >= 0) {
-    const d = [];
-    for (let i = iD + 1; i < lineas.length && d.length < 3 && !/CLAVE|CURP|AÑO|FECHA|SECCI/.test(lineas[i]); i++) d.push(lineas[i]);
-    if (d.length) r.domicilio = d.join(", ");
+  return "";
+}
+const sinAcento = s => s.normalize("NFD").replace(/[̀-ͯ]/g, "");
+// Vuelta de la INE: renglones de máquina (IDMEX…; nacimiento, sexo y vencimiento; APELLIDO<APELLIDO<<NOMBRE).
+function leerMRZ(texto) {
+  const r = {};
+  const ls = texto.toUpperCase().split("\n").map(x => x.replace(/[«‹(\[{]/g, "<").replace(/\s+/g, "")).filter(x => x.length >= 15);
+  for (const l of ls) {
+    const m2 = l.match(/\d[MFH](\d{2})\d{4,5}\s*[MN]EX/);
+    if (m2 && /<|MEX/.test(l)) r.vigencia = "20" + m2[1];
+    // Nacimiento AAMMDD + dígito verificador (pesos 7-3-1 del renglón de máquina): solo se usa si cuadra.
+    const mn = l.match(/(\d{6})(\d)[MFH]\d{6}/);
+    if (mn && [...mn[1]].reduce((a, d, i) => a + Number(d) * [7, 3, 1][i % 3], 0) % 10 === Number(mn[2])) r.nacimiento = mn[1];
+    const m3 = l.match(/([A-ZÑ]{2,}(?:<[A-ZÑ]{2,})*)<<([A-ZÑ]{2,}(?:<[A-ZÑ]{2,})*)<{2,}/);
+    if (m3 && !/IDMEX|MEX<|\d/.test(l)) r.nombre = m3[2].replace(/</g, " ") + " " + m3[1].replace(/</g, " ");
   }
   return r;
+}
+// Etiquetas de la credencial (también mal leídas: «nomcIo», «vicencia», «cuvenemectos»…).
+const ETQ = /NOMBRE|DOMICILIO|NOMCIO|SEXO|CLAVE|ELECT|CURP|FECHA|NACIMIENTO|SECCI|REGISTRO|VIGENCIA|VICENCIA|ESTADO|MUNICIPIO|LOCALIDAD|EMISI|INSTITUTO|NACIONAL|CREDENCIAL|VOTAR|MEXICO/;
+function interpretarINE(texto) {
+  const t = sinAcento(texto.toUpperCase().replace(/[|]/g, ""));
+  const lineas = t.split("\n").map(x => x.trim()).filter(Boolean);
+  const r = { ...leerMRZ(t) };
+  const curp = curpDeTexto(t);
+  if (curp) r.curp = curp;
+  if (!r.vigencia) {
+    const vig = t.match(/(20\d\d)\s*[-–—]\s*(20\d\d)/) || t.match(/V[I1L][GC][EC]NC[I1L]A\W*(20\d\d)/) || t.match(/V[I1L][GC][EC]NC[I1L]A[^\n]*\n[^\n]*?(20\d\d)\D*$/m);
+    if (vig) r.vigencia = vig[2] || vig[1];
+  }
+  const palabras = l => l.replace(/[^A-ZÑ ]/g, " ").split(/\s+/).filter(w => w.length >= 3 && !ETQ.test(w));
+  const esDomicilio = l => /D?OM[I1]C[I1]L|NOMC[I1]O|DOMIC/.test(l);
+  const iN = lineas.findIndex(x => /N[O0]MBRE/.test(x));
+  let iD = lineas.findIndex(esDomicilio);
+  if (iN >= 0) {
+    const n = [];
+    for (let i = iN + 1; i < lineas.length && n.length < 3 && !esDomicilio(lineas[i]) && !/\d{3,}\s+[A-Z]|\d{5}/.test(lineas[i].replace(/\d\d\/\d\d\/\d{4}/, "")); i++) {
+      const ws = palabras(lineas[i]);
+      if (ws.length) n.push(ws.reduce((a, b) => (b.length > a.length ? b : a))); // un dato por renglón: apellido, apellido, nombre
+      if (iD < 0 && n.length === 3) iD = i;
+    }
+    if (n.length === 3) r.nombre = [n[2], n[0], n[1]].join(" ");
+  }
+  // Domicilio: los renglones entre DOMICILIO (o el nombre) y CLAVE DE ELECTOR; el del código postal (5 cifras) es la clave.
+  const iC = lineas.findIndex(x => /CLAVE|ELECT|EMECTO|CLAVEDE/.test(x));
+  if (iC > 0) {
+    const desde = iD >= 0 ? iD + 1 : Math.max(0, iC - 3);
+    const d = [];
+    for (let i = desde; i < iC; i++) {
+      let l = lineas[i].replace(/[^A-ZÑ0-9 .,#\-]/g, " ").replace(/\s+/g, " ").trim();
+      l = l.split(" ").filter((w, k, ws) => w.length >= 3 || /^\d+$/.test(w) || (k > 0 && k < ws.length - 1 && /^(DE|LA|EL|Y)$/.test(w))).join(" ");
+      if (/[A-ZÑ]{3,}|\d{3,}/.test(l) && !/^(N[O0]MBRE|SEXO)/.test(l)) d.push(l);
+    }
+    const sinCP = d.findIndex(x => /\b\d{5}\b/.test(x));
+    const ds = d.slice(Math.max(0, (sinCP >= 0 ? sinCP : d.length) - 1), (sinCP >= 0 ? sinCP : d.length - 1) + 2).slice(-3);
+    if (ds.length) r.domicilio = ds.join(", ");
+  }
+  return r;
+}
+// Puntos para saber si la foto está derecha: cuántas palabras de INE se leyeron.
+const puntosINE = t => (sinAcento(t.toUpperCase()).match(/NOMBRE|DOMICILIO|CURP|CLAVE|ELECTOR|VIGENCIA|INSTITUTO|NACIONAL|CREDENCIAL|IDMEX|MEX<|<<</g) || []).length;
+// Prepara la foto: girada, a buen tamaño y en gris con más contraste (borra el fondo de seguridad).
+async function imagenParaLeer(blob, grados, { largo = 1800, claro = 0.6 } = {}) {
+  const bmp = await createImageBitmap(blob);
+  const esc = Math.min(3, largo / Math.max(bmp.width, bmp.height));
+  const w = Math.round(bmp.width * esc), h = Math.round(bmp.height * esc), gira = grados % 180 !== 0;
+  const c = document.createElement("canvas"); c.width = gira ? h : w; c.height = gira ? w : h;
+  const g = c.getContext("2d");
+  g.translate(c.width / 2, c.height / 2); g.rotate((grados * Math.PI) / 180); g.drawImage(bmp, -w / 2, -h / 2, w, h);
+  if (!claro) return c; // a color, sin tocar
+  const im = g.getImageData(0, 0, c.width, c.height), d = im.data, hist = new Array(256).fill(0);
+  for (let i = 0; i < d.length; i += 4) { const y = Math.min(d[i], d[i + 1], d[i + 2]); d[i] = y; hist[y]++; }
+  const n = d.length / 4, perc = q => { let a = 0; for (let v = 0; v < 256; v++) { a += hist[v]; if (a >= n * q) return v; } return 255; };
+  const bajo = perc(0.02), alto = Math.max(bajo + 20, perc(claro));
+  for (let i = 0; i < d.length; i += 4) { const v = Math.max(0, Math.min(255, ((d[i] - bajo) * 255) / (alto - bajo))); d[i] = d[i + 1] = d[i + 2] = v; }
+  g.putImageData(im, 0, 0);
+  return c;
+}
+// Junta lo leído en varias pasadas: CURP que cuadre, nombre de la vuelta, el domicilio más completo.
+function juntarINE(rs) {
+  const r = {};
+  const masVotado = xs => { const c = {}; for (const x of xs.filter(Boolean)) c[x] = (c[x] || 0) + 1; return Object.keys(c).sort((a, b) => c[b] - c[a])[0]; };
+  // La fecha de nacimiento de la vuelta confirma la CURP; si no coincide, se corrige la fecha y se revisa el verificador.
+  const nac = masVotado(rs.map(x => x.nacimiento));
+  const curps = rs.map(x => x.curp).filter(Boolean);
+  r.curp = (nac && masVotado(curps.filter(c => c.slice(4, 10) === nac))) || "";
+  if (!r.curp && nac) for (const c of curps) { const p = c.slice(0, 4) + nac + c.slice(10); if (curpValida(p)) { r.curp = p; break; }
+    for (let k = 16; k < 18 && !r.curp; k++) for (const d of "0123456789") { const q = p.slice(0, k) + d + p.slice(k + 1); if (curpValida(q) && curpCreible(q)) { r.curp = q; break; } } if (r.curp) break; }
+  if (!r.curp) r.curp = masVotado(curps);
+  r.nombre = masVotado(rs.filter(x => x.mrz).map(x => x.nombre)) || masVotado(rs.map(x => x.nombre));
+  r.vigencia = masVotado(rs.filter(x => x.mrz).map(x => x.vigencia)) || masVotado(rs.map(x => x.vigencia));
+  const puntosDom = d => (d ? (/\b\d{5}\b/.test(d) ? 4 : 0) + (/\b\d{1,5}\b/.test(d.replace(/\b\d{5}\b/, "")) ? 2 : 0) + Math.min(3, d.split(",").length) - (d.match(/\b[A-Z]{1,2}\b/g) || []).length * 0.3 : -9);
+  // Solo un domicilio con código postal; si no, mejor vacío para escribirlo a mano.
+  r.domicilio = rs.map(x => x.domicilio).filter(d => d && puntosDom(d) >= 4).sort((a, b) => puntosDom(b) - puntosDom(a))[0];
+  for (const k of Object.keys(r)) if (!r[k]) delete r[k];
+  return r;
+}
+let lectorINE = null;
+async function lector() { await cargarOCR(); if (!lectorINE) lectorINE = await Tesseract.createWorker("spa"); return lectorINE; }
+const RE_FRENTE = /N[O0]MBRE|DOMICILIO|CURP|CLAVE|ELECTOR|VIGENCIA|INSTITUTO|CREDENCIAL|VOTAR|NACIMIENTO|SECCI/, RE_VUELTA = /IDMEX|<<|[A-Z0-9]{4,}<[A-Z0-9<]{4,}|ELECCIONES|SECRETARI|EJECUTIV/;
+// Lee una foto: la endereza y dice si es frente, vuelta o las dos (con los recuadros de cada lado).
+async function ladoDeFoto(blob, avance = () => {}) {
+  const w = await lector();
+  await w.setParameters({ tessedit_pageseg_mode: "3" });
+  let mejor = { p: -1 };
+  for (const grados of [0, 90, 270, 180]) {
+    avance();
+    const lienzo = await imagenParaLeer(blob, grados, { largo: 2400, claro: 0.6 });
+    const { data } = await w.recognize(lienzo);
+    const p = puntosINE(data.text);
+    if (p > mejor.p) mejor = { p, data, grados, lienzo };
+    if (p >= 3) break;
+  }
+  const caja = () => ({ x0: 1e9, y0: 1e9, x1: -1, y1: -1, n: 0 }), F = caja(), V = caja();
+  const sumar = (c, b) => { c.x0 = Math.min(c.x0, b.x0); c.y0 = Math.min(c.y0, b.y0); c.x1 = Math.max(c.x1, b.x1); c.y1 = Math.max(c.y1, b.y1); c.n++; };
+  for (const bl of mejor.data?.blocks || []) for (const pa of bl.paragraphs) for (const li of pa.lines) {
+    const t = sinAcento(li.text.toUpperCase()).replace(/\s+/g, "");
+    if (RE_VUELTA.test(t)) sumar(V, li.bbox); else if (RE_FRENTE.test(t)) sumar(F, li.bbox);
+  }
+  const lado = F.n >= 2 && V.n >= 1 ? "ambos" : V.n >= 1 && V.n >= F.n ? "vuelta" : F.n >= 1 ? "frente" : "";
+  return { lado, F, V, grados: mejor.grados, lienzo: mejor.lienzo, texto: mejor.data?.text || "" };
+}
+// Si en una foto vienen los dos lados, corta cada credencial (ya derecha) y regresa [frente, vuelta].
+async function separarINE(blob, avance) {
+  const r = await ladoDeFoto(blob, avance);
+  if (r.lado !== "ambos") return { lado: r.lado };
+  const { F, V, lienzo: c } = r, W = c.width, H = c.height;
+  const encima = Math.max(F.y0, V.y0) >= Math.min(F.y1, V.y1) - 5; // uno arriba del otro
+  let a, b; // recuadros [x, y, w, h]
+  if (encima) {
+    const fArriba = F.y0 < V.y0, corte = Math.round(fArriba ? F.y1 + (V.y0 - F.y1) * 0.15 : V.y1 + (F.y0 - V.y1) * 0.5);
+    a = fArriba ? [0, 0, W, corte] : [0, corte, W, H - corte];
+    b = fArriba ? [0, corte, W, H - corte] : [0, 0, W, corte];
+  } else {
+    const fIzq = F.x0 < V.x0, corte = Math.round(fIzq ? F.x1 + (V.x0 - F.x1) * 0.3 : V.x1 + (F.x0 - V.x1) * 0.5);
+    a = fIzq ? [0, 0, corte, H] : [corte, 0, W - corte, H];
+    b = fIzq ? [corte, 0, W - corte, H] : [0, 0, corte, H];
+  }
+  // Se recorta de la foto original a color (misma orientación), no de la versión en gris.
+  const color = await imagenParaLeer(blob, r.grados, { largo: 2400, claro: 0 });
+  const recorta = async ([x, y, w, h]) => {
+    const k = document.createElement("canvas"); k.width = Math.max(1, w); k.height = Math.max(1, h);
+    k.getContext("2d").drawImage(color, x, y, w, h, 0, 0, w, h);
+    return new Promise(ok => k.toBlob(ok, "image/jpeg", 0.85));
+  };
+  return { lado: "ambos", frente: await recorta(a), vuelta: await recorta(b) };
+}
+const PASADAS = [{ largo: 1800, claro: 0.6, psm: "3" }, { largo: 2200, claro: 0.4, psm: "3" }, { largo: 2200, claro: 0.6, psm: "11" }, { largo: 1500, claro: 0, psm: "6" }];
+async function ocrINE(blobs, avance = () => {}) {
+  await lector();
+  const leer = async (blob, grados, pas) => {
+    await lectorINE.setParameters({ tessedit_pageseg_mode: pas.psm });
+    const { data } = await lectorINE.recognize(await imagenParaLeer(blob, grados, pas));
+    return data.text;
+  };
+  const rs = [];
+  for (const [k, blob] of blobs.entries()) {
+    const quien = `foto ${k + 1} de ${blobs.length}`;
+    // 1) Enderezar: la primera pasada en cada giro hasta que se lean palabras de INE.
+    let mejor = { p: -1 };
+    for (const grados of [0, 90, 270, 180]) {
+      avance(`Leyendo ${quien}…`);
+      const t = await leer(blob, grados, PASADAS[0]);
+      const p = puntosINE(t);
+      if (p > mejor.p) mejor = { p, t, grados };
+      if (p >= 3) break;
+    }
+    const lecturas = [mejor.t];
+    // 2) Vuelta con renglón de máquina: basta. Frente: más pasadas con otro contraste y acomodo.
+    const mrz = leerMRZ(mejor.t);
+    if (!mrz.nombre) for (const [i, pas] of PASADAS.slice(1).entries()) { avance(`Leyendo ${quien} (${i + 2} de ${PASADAS.length})…`); lecturas.push(await leer(blob, mejor.grados, pas)); }
+    for (const t of lecturas) { const x = interpretarINE(t); x.mrz = !!leerMRZ(t).nombre; rs.push(x); }
+  }
+  return juntarINE(rs);
 }
 const titulo = s => s.toLowerCase().replace(/(^|\s)\S/g, m => m.toUpperCase());
 async function leerINEs() {
@@ -975,26 +1209,27 @@ async function leerINEs() {
     msg("Preparando lector… (la primera vez necesita internet)");
     await cargarOCR();
     const pares = [["ineInq", "inquilino"], ["ineFia", "fiador"]];
-    let algo = false;
+    let algo = false; const resumen = [];
     for (const [k, quien] of pares) {
-      const fotos = borrador.docs[k]?.fotos || [];
+      const x = borrador.docs[k] || {};
+      const fotos = [x.frente, x.vuelta].filter(Boolean).length ? [x.frente, x.vuelta].filter(Boolean) : x.fotos || [];
       if (!fotos.length) continue;
-      let texto = "";
-      for (const f of fotos) {
-        msg(`Leyendo INE del ${quien}…`);
-        const { data } = await Tesseract.recognize(await leerFoto(f), "spa");
-        texto += "\n" + data.text;
-      }
-      const r = interpretarINE(texto);
+      const blobs = [];
+      for (const f of fotos) blobs.push(await leerFoto(f));
+      const r = await ocrINE(blobs, t => msg(`INE del ${quien}: ${t.toLowerCase()}`));
       const destino = k === "ineInq" ? borrador.inquilino : borrador.fiador;
-      if (r.nombre && !destino.nombre) destino.nombre = titulo(r.nombre);
-      if (r.domicilio && !destino.domicilio) destino.domicilio = titulo(r.domicilio);
-      if (r.curp && !destino.curp) destino.curp = r.curp;
+      // Se reemplaza lo que esté vacío o lo que puso una lectura anterior; lo escrito a mano no se toca.
+      const antes = (borrador.leido = borrador.leido || {})[k] || {};
+      const poner = (campo, valor) => { if (valor && (!destino[campo] || destino[campo] === antes[campo])) { destino[campo] = valor; antes[campo] = valor; } };
+      poner("nombre", r.nombre && titulo(r.nombre)); poner("domicilio", r.domicilio && titulo(r.domicilio)); poner("curp", r.curp);
+      borrador.leido[k] = antes;
       if (r.vigencia) borrador.docs[k].vigencia = r.vigencia;
       algo = algo || !!(r.nombre || r.curp || r.domicilio);
+      const falta = [["nombre", "nombre"], ["domicilio", "domicilio"], ["curp", "CURP"]].filter(([c]) => !r[c]).map(([, t]) => t);
+      resumen.push(`INE del ${quien}: ${falta.length ? "falta " + falta.join(", ") + " (escríbelo a mano)" : "todo leído"}`);
     }
     render();
-    msg(algo ? "✅ Datos leídos. Revísalos abajo." : "No pude leer datos. Sube fotos más claras o escríbelos a mano.");
+    msg(algo ? "✅ " + resumen.join(". ") + ". Revisa abajo." : "No pude leer datos. Toma la foto con buena luz, sin reflejo y que se vea toda la credencial.");
   } catch (e) {
     msg("No se pudo leer: " + e.message + ". Escribe los datos a mano.");
   }
@@ -1061,8 +1296,21 @@ async function marcarDoc(cid, did, ok) {
   }
   await guardar(); render();
 }
+async function fotoINEDoc(cid, did, lado) {
+  const blob = await pedirUnaFoto();
+  if (!blob) return;
+  const c = E.contratos.find(x => x.id === cid);
+  c.docs = c.docs || {};
+  const x = (c.docs[did] = c.docs[did] || { fotos: [] });
+  if (!x.frente && !x.vuelta && x.fotos && x.fotos.length) { x.frente = x.fotos[0]; x.vuelta = x.fotos[1]; }
+  hoja('<p class="sub" style="font-weight:400">Acomodando la foto…</p>', "INE");
+  await acomodarINE(x, lado, blob);
+  cerrarHoja(); await guardar(); render();
+}
 async function fotoDoc(cid, did) {
-  const ids = await pedirFotos();
+  const c0 = E.contratos.find(x => x.id === cid), ya = (c0.docs?.[did]?.fotos || []).length;
+  const ids = (await pedirFotos((MAX_FOTOS[did] || 99) > 1)).slice(0, (MAX_FOTOS[did] || 99) - ya);
+  if (!ids.length) return;
   if (!ids.length) return;
   const c = E.contratos.find(x => x.id === cid);
   c.docs = c.docs || {};
@@ -1072,7 +1320,7 @@ async function fotoDoc(cid, did) {
   if (!d.ok) await marcarDoc(cid, did, true); else render();
 }
 async function fotoLocal(id, campo) {
-  const ids = await pedirFotos();
+  const ids = (await pedirFotos()).slice(0, (MAX_FOTOS[campo] || 99) - (local(id)[campo] || []).length);
   if (!ids.length) return;
   const l = local(id);
   (l[campo] = l[campo] || []).push(...ids);
@@ -1132,8 +1380,7 @@ function docsLicencia(cid) {
       <div class="dato"><span>Formato de pago</span><a href="${esc(m.formato)}" target="_blank" rel="noopener">Abrir</a></div></div>` : ""}
     <p class="sub">1. Manda el mensaje. 2. Comparte los archivos en el mismo chat.</p>
     <button class="btn wa" onclick="whatsapp(envio.tel, envio.texto)">${ic("wa")}Mandar mensaje por WhatsApp</button>
-    <button class="btn" onclick="compartirPaqueteLicencia(envio.cid)">${ic("pdf")}Compartir contrato, INE y fotos</button>
-    <button class="btn sec" onclick="marcarDoc('${cid}','licencia',true);cerrarHoja()">Marcar como entregados</button>`, "Docs para licencia");
+    <button class="btn" onclick="compartirPaqueteLicencia(envio.cid)">${ic("pdf")}Compartir contrato, INE y fotos</button>`, "Docs para licencia");
 }
 // Junta contrato en PDF y fotos en un solo envío (WhatsApp, correo, Drive…).
 async function compartirPaqueteLicencia(cid) {
@@ -1330,7 +1577,6 @@ function exportarCalendario() {
     const primera = cargo(c, mesActual());
     add(primera.limite, `Revisar renta ${n} (${c.inquilino.nombre})`, `FREQ=MONTHLY;UNTIL=${fmt(fin)}`);
     add(sumarDias(fin, -E.ajustes.avisoRenovacion), `Renovar contrato ${n}`);
-    if (l.licenciaVence) add(sumarDias(l.licenciaVence, -30), `Licencia de giro por vencer ${n}`);
   }
   for (const g of E.gastos) if (!g.pagado && g.vence) add(sumarDias(g.vence, -7), `Pagar ${g.concepto} (${plaza(g.plazaId).nombre})`);
   const ics = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Rentas Sandra//ES", ...ev, "END:VCALENDAR"].join("\r\n");
@@ -1383,7 +1629,7 @@ function vMas() {
     <a class="fila" href="#/cierre"><div>${ic("pdf")}Cierre de mes<small>Ingresos, gastos y cuentas del mes</small></div>${ic("flecha")}</a>
     <a class="fila" href="#/calendario"><div>${ic("cal")}Calendario de locales<small>Quién paga y cuándo, por mes</small></div>${ic("flecha")}</a>
     <a class="fila" href="#/banco"><div>${ic("banco")}Revisar con el banco<small>Sube tu estado de cuenta</small></div>${ic("flecha")}</a>
-    <a class="fila" onclick="exportarCalendario()"><div>${ic("cal")}Recordatorios en mi calendario<small>Rentas, renovaciones y licencias</small></div>${ic("flecha")}</a>
+    <a class="fila" onclick="exportarCalendario()"><div>${ic("cal")}Recordatorios en mi calendario<small>Rentas y renovaciones</small></div>${ic("flecha")}</a>
     <a class="fila" href="#/drive"><div>${ic("respaldo")}Google Drive<small>${driveActivo() ? "Conectado: se guarda solo" : "Respaldo automático y usar en varios aparatos"}</small></div>${ic("flecha")}</a>
     <a class="fila" href="#/respaldo"><div>${ic("respaldo")}Respaldo<small>${E.ultimoRespaldo ? "Último: " + fechaBonita(E.ultimoRespaldo) : "Aún no tienes"}</small></div>${ic("flecha")}</a>
     <a class="fila" href="#/plazas"><div>${ic("plaza")}Plazas<small>Direcciones y predial</small></div>${ic("flecha")}</a>
@@ -1391,15 +1637,12 @@ function vMas() {
 }
 function vPlazas() {
   pantalla("Plazas", "", `<div class="card">${E.plazas.map(p => `<div class="fila" onclick="editarPlaza('${p.id}')"><div><b>${esc(p.nombre)}</b><small>${esc(p.municipio || "Sin municipio")} · ${esc(p.direccion)}</small></div>${ic("flecha")}</div>`).join("")}</div>
-    <button class="btn sec" onclick="editarPlaza('')">${ic("mas")}Agregar plaza</button>
-    <h2>Padrón y Licencias por municipio</h2><div class="card">${E.ajustes.municipios.map((m, i) => `<div class="fila" onclick="editarMunicipio(${i})"><div><b>${esc(m.nombre)}</b><small>${esc(m.telefono)}</small></div>${ic("flecha")}</div>`).join("")}</div>
-    <button class="btn sec" onclick="editarMunicipio(-1)">${ic("mas")}Agregar municipio</button>
-    <p class="sub" style="font-weight:400">Datos públicos de cada municipio (octubre 2026). Confirma por teléfono antes de ir.</p>`, "#/mas");
+    <button class="btn sec" onclick="editarPlaza('')">${ic("mas")}Agregar plaza</button>`, "#/mas");
 }
 function editarPlaza(id) {
   const p = E.plazas.find(x => x.id === id) || { id: "P" + uid(), nombre: "", direccion: "", predial: "", nuevo: true };
   formulario(p.nuevo ? "Nueva plaza" : "Plaza", [["nombre", "Nombre"], ["direccion", "Dirección completa", "textarea", 2], ["predial", "Cuenta predial"],
-    ["municipio", "Municipio (para la licencia)", "select", ["", ...E.ajustes.municipios.map(m => m.nombre)]]], p, d => {
+    ["municipio", "Municipio", "select", ["", ...E.ajustes.municipios.map(m => m.nombre)]]], p, d => {
     Object.assign(p, d);
     if (p.nuevo) { delete p.nuevo; E.plazas.push(p); }
   });
@@ -1413,15 +1656,15 @@ function editarMunicipio(i) {
   });
 }
 async function fotoPropietaria() {
-  const ids = await pedirFotos();
+  const ids = (await pedirFotos()).slice(0, 2 - (E.ajustes.inePropietaria || []).length);
   if (!ids.length) return;
   E.ajustes.inePropietaria.push(...ids);
   await guardar(); render();
 }
 function vAjustes() {
   const a = E.ajustes;
-  pantalla("Ajustes", "", `<div class="card"><b>INE de la propietaria</b><p class="sub" style="font-weight:400">Se usa en los documentos para la licencia de giro de tus inquilinos.</p>
-    <div class="fotos">${miniaturas(a.inePropietaria)}<button class="mas-foto" aria-label="Agregar foto de tu INE" onclick="fotoPropietaria()">${ic("foto")}</button></div></div>
+  pantalla("Ajustes", "", `<div class="card"><b>INE de la propietaria</b><p class="sub" style="font-weight:400">Va en los documentos para la licencia de tus inquilinos.</p>
+    <div class="fotos">${miniaturas(a.inePropietaria)}${botonFoto("inePropietaria", a.inePropietaria, "fotoPropietaria()", "Agregar foto de tu INE")}</div></div>
     <form id="fa" class="card">
     <label>Nombre de la arrendadora<input name="arrendador" value="${esc(a.arrendador)}"></label>
     <label>Ciudad donde se firman contratos<input name="ciudadFirma" value="${esc(a.ciudadFirma)}"></label>
@@ -1430,12 +1673,10 @@ function vAjustes() {
     <label>Responder renovación con (días antes, contrato: 30)<input name="respuestaRenovacion" type="number" inputmode="numeric" value="${esc(a.respuestaRenovacion)}"></label>
     <label>Propietarias y su domicilio (uno por renglón: Nombre | Domicilio)<textarea name="propietarias" rows="3">${esc(a.propietarias)}</textarea></label>
     <label>Avisar renovación con (días antes)<input name="avisoRenovacion" type="number" inputmode="numeric" value="${esc(a.avisoRenovacion)}"></label>
-    <label>Revisar luz si no hay pago en (días)<input name="diasLuz" type="number" inputmode="numeric" value="${esc(a.diasLuz)}"></label>
     <label>Inflación anual para aumento (%, dato de INEGI)<input name="inflacion" type="number" inputmode="decimal" step="any" value="${esc(a.inflacion)}"></label>
     <label>Duración normal del contrato (meses)<input name="mesesContrato" type="number" inputmode="numeric" value="${esc(a.mesesContrato)}"></label>
     <label>Interés moratorio en pagarés (% mensual, vacío = sin interés)<input name="interesPagare" type="number" inputmode="decimal" step="any" value="${esc(a.interesPagare)}"></label>
     <label>Mensaje de requisitos (WhatsApp)<textarea name="textoRequisitos" rows="6">${esc(a.textoRequisitos)}</textarea></label>
-    <label>Documentos para licencia de giro (uno por renglón)<textarea name="docsLicencia" rows="5">${esc(a.docsLicencia)}</textarea></label>
     <label>Contrato modelo <small>Campos: {ARRENDADOR} {INQUILINO} {FIADOR} {LOCAL_DESCRIPCION} {GIRO} {RENTA} {RENTA_LETRA} {IVA} {DEPOSITO} {DIA_PAGO_TEXTO} {DURACION} {INICIO} {FIN}…</small><textarea name="plantillaContrato" rows="10">${esc(a.plantillaContrato)}</textarea></label>
     <label>Pagaré modelo<textarea name="plantillaPagare" rows="8">${esc(a.plantillaPagare)}</textarea></label>
     <button class="btn">Guardar ajustes</button></form>`, "#/mas");
@@ -1620,6 +1861,9 @@ let filtroCal = "todas";
 function contratoDeMes(l, m) {
   return E.contratos.find(c => c.localId === l.id && m >= (c.cobrarDesde || c.inicio.slice(0, 7)) && m <= finC(c).slice(0, 7));
 }
+// Filtro del calendario por estado: tocar «Pagó», «Debe», etc. deja solo esos; tocarlo otra vez los muestra todos.
+let filtroEstadoCal = "";
+function filtrarEstadoCal(k) { filtroEstadoCal = filtroEstadoCal === k ? "" : k; render(); }
 function vCalendario(arg) {
   const base = /^\d{4}-\d{2}$/.test(arg || "") ? arg : sumarMeses(mesActual(), -2);
   const meses = Array.from({ length: 12 }, (_, i) => sumarMeses(base, i));
@@ -1628,10 +1872,11 @@ function vCalendario(arg) {
     const c = contratoDeMes(l, m);
     // Celda libre: tocarla lleva a rentar el local (vacío) o a capturar al inquilino actual (rentado sin datos).
     if (!c) {
+      const apaga = filtroEstadoCal && filtroEstadoCal !== (l.estado === "rentado" ? "sin" : "vac") ? " apag" : "";
       if (l.estado === "vacio" || l.estado === "venta")
-        return `<td class="cal-vac"><a class="cal-add" href="#/rentar/${l.id}" aria-label="Rentar ${esc(nombreLocal(l))}">${m === hoyMes ? "+ Rentar" : l.estado === "venta" ? "En venta" : "Vacío"}</a></td>`;
+        return `<td class="cal-vac${apaga}"><a class="cal-add" href="#/rentar/${l.id}" aria-label="Rentar ${esc(nombreLocal(l))}">${m === hoyMes ? "+ Rentar" : l.estado === "venta" ? "En venta" : "Vacío"}</a></td>`;
       if (l.estado === "rentado")
-        return `<td class="cal-sin"><a class="cal-add" href="#/rentar/${l.id}?existente=1" aria-label="Capturar inquilino de ${esc(nombreLocal(l))}">${m === hoyMes ? "+ Capturar" : ""}</a></td>`;
+        return `<td class="cal-sin${apaga}"><a class="cal-add" href="#/rentar/${l.id}?existente=1" aria-label="Capturar inquilino de ${esc(nombreLocal(l))}">${m === hoyMes ? "+ Capturar" : "Capturar"}</a></td>`;
       return `<td></td>`;
     }
     const x = cargo(c, m);
@@ -1639,12 +1884,22 @@ function vCalendario(arg) {
     const etiqueta = { Pagado: "Pagó", Atrasado: "Debe", Parcial: "Parcial", Pendiente: "Pendiente" }[x.estado];
     const ini = m === (c.cobrarDesde || c.inicio.slice(0, 7)) ? " ini" : "";
     const fin = m === finC(c).slice(0, 7) ? " fin" : "";
-    return `<td class="cal-c"><span class="bar ${tono}${ini}${fin}" role="button" tabindex="0" onclick="detalleCargo('${c.id}','${m}')" title="${esc(c.inquilino.nombre)} · ${esc(etiqueta)}">${etiqueta}</span></td>`;
+    const apagado = filtroEstadoCal && filtroEstadoCal !== tono ? " apag" : "";
+    return `<td class="cal-c${apagado}"><span class="bar ${tono}${ini}${fin}" role="button" tabindex="0" onclick="detalleCargo('${c.id}','${m}')" title="${esc(c.inquilino.nombre)} · ${esc(etiqueta)}">${etiqueta}</span></td>`;
   };
   const filas = E.plazas.filter(p => filtroCal === "todas" || p.id === filtroCal).map(p => {
     const ls = E.locales.filter(l => l.plazaId === p.id);
     if (!ls.length) return "";
-    return `<tr class="grupo"><th colspan="${meses.length + 1}"><span>${esc(p.nombre)}</span></th></tr>` + ls.map(l => {
+    const coincide = l => {
+      if (!filtroEstadoCal) return true;
+      const c = contratoActivo(l.id);
+      if (!c) return filtroEstadoCal === (l.estado === "rentado" ? "sin" : "vac");
+      const tono = { Pagado: "ok", Atrasado: "mal", Parcial: "ojo", Pendiente: "pend" };
+      return meses.some(m => contratoDeMes(l, m) && tono[cargo(c, m).estado] === filtroEstadoCal);
+    };
+    const visibles = ls.filter(coincide);
+    if (!visibles.length) return "";
+    return `<tr class="grupo"><th colspan="${meses.length + 1}"><span>${esc(p.nombre)}</span></th></tr>` + visibles.map(l => {
       const c = contratoActivo(l.id);
       const sub = c ? c.inquilino.nombre : estadoLocal(l)[0];
       return `<tr><th><a href="#/local/${l.id}"><b>${esc(l.numero)}</b><small>${esc(sub)}</small></a></th>${meses.map(m => celda(l, m)).join("")}</tr>`;
@@ -1654,12 +1909,12 @@ function vCalendario(arg) {
   pantalla("Calendario", nombreMes(meses[0]) + " a " + nombreMes(meses[11]), `
     <div class="mesnav"><a href="#/calendario/${sumarMeses(base, -1)}" aria-label="Mes anterior"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></a><a href="#/calendario" style="width:auto;padding:0 14px;font-size:14px;font-weight:700">Hoy</a><a href="#/calendario/${sumarMeses(base, 1)}" aria-label="Mes siguiente">${ic("flecha")}</a></div>
     <label class="cal-filtro">Plaza<select onchange="filtroCal=this.value;render()">${[["todas", "Todas las plazas"], ...E.plazas.map(p => [p.id, p.nombre])].map(([k, t]) => `<option value="${esc(k)}" ${filtroCal === k ? "selected" : ""}>${esc(t)}</option>`).join("")}</select></label>
-    <div class="cal-leyenda"><span class="bar ok">Pagó</span><span class="bar ojo">Parcial</span><span class="bar pend">Pendiente</span><span class="bar mal">Debe</span><span class="cal-vac">Vacío</span><span class="cal-sin">Sin datos</span></div>
+    <div class="cal-leyenda">${[["ok", "Pagó", "bar"], ["ojo", "Parcial", "bar"], ["pend", "Pendiente", "bar"], ["mal", "Debe", "bar"], ["vac", "Vacío", "cal-vac"], ["sin", "Sin datos", "cal-sin"]].map(([k, t, c]) => `<button class="leyenda-btn ${c === "bar" ? "bar " + k : c}${filtroEstadoCal === k ? " on" : ""}" aria-pressed="${filtroEstadoCal === k}" onclick="filtrarEstadoCal('${k}')">${t}</button>`).join("")}${filtroEstadoCal ? '<button class="leyenda-btn todos" onclick="filtrarEstadoCal(filtroEstadoCal)">Ver todos</button>' : ""}</div>
     <div class="calwrap"><table class="cal">
-      <thead><tr><th>Local</th>${meses.map(m => `<th class="${m === hoyMes ? "hoy" : ""}">${mesNombre(m)}</th>`).join("")}</tr></thead>
+      <thead><tr><th>Local</th>${meses.map(m => `<th class="${m === hoyMes ? "hoy" : ""}"><a href="#/pagos/${m}" aria-label="Ver pagos de ${nombreMes(m)}">${mesNombre(m)}</a></th>`).join("")}</tr></thead>
       <tbody>${filas || '<tr><td class="vacio">Nada que mostrar</td></tr>'}</tbody>
     </table></div>
-    <p class="sub" style="font-weight:400">Toca una barra para ver el pago de ese mes. En un local vacío, toca «+ Rentar» para darlo de alta; en uno sin datos, «+ Capturar».</p>`, "#/mas");
+    <p class="sub" style="font-weight:400">Toca un color de arriba para ver solo esos. Toca el mes para ver sus pagos y una barra para ver o registrar ese pago. En un local vacío, «Rentar»; en uno sin datos, «Capturar».</p>`, "#/mas");
   // Abre mostrando el mes actual junto a la columna de locales
   const caja = $(".calwrap"), hoyTh = caja && caja.querySelector("th.hoy");
   if (hoyTh) caja.scrollLeft += hoyTh.getBoundingClientRect().left - caja.querySelector("th").getBoundingClientRect().right;

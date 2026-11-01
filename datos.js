@@ -63,7 +63,6 @@ const DOCS_EXPEDIENTE = [
   { id: "pagRenta", nombre: "Pagaré por un mes de renta", foto: true },
   { id: "pagDep", nombre: "Pagaré por un mes de depósito", foto: true },
   { id: "contrato", nombre: "Contrato firmado", foto: true },
-  { id: "licencia", nombre: "Docs para su licencia entregados", foto: false },
 ];
 
 const DOCS_LICENCIA_ANTERIOR =
@@ -87,11 +86,12 @@ const AJUSTES_INICIALES = {
   docsLicencia: DOCS_LICENCIA_TEXTO,
 };
 
+// Sin la parte «Al firmar» (Sergio, 1 nov 2026): solo lo que se pide antes de hacer el contrato.
+const TEXTO_REQUISITOS_ANTERIOR_FIRMAR = "*Al firmar*\n• Pagaré por un mes de renta\n• Pagaré por un mes de depósito\n• Pago del primer mes y del depósito\n\n";
 const TEXTO_REQUISITOS =
   "Hola, para preparar tu contrato del local necesito que me mandes por aquí foto clara de:\n\n" +
   "*Inquilino*\n• INE vigente (por ambos lados)\n• Comprobante de domicilio no mayor a 3 meses\n• Nombre completo, correo y giro del negocio\n\n" +
-  "*Fiador solidario*\n• INE vigente (por ambos lados)\n• Comprobante de domicilio no mayor a 3 meses\n\n" +
-  "*Al firmar*\n• Pagaré por un mes de renta\n• Pagaré por un mes de depósito\n• Pago del primer mes y del depósito\n\nGracias.";
+  "*Fiador solidario*\n• INE vigente (por ambos lados)\n• Comprobante de domicilio no mayor a 3 meses\n\nGracias.";
 
 // Contrato provisional anterior: si un celular lo tiene, se cambia por el de los contratos firmados.
 const INICIO_PLANTILLA_PROVISIONAL = "CONTRATO DE ARRENDAMIENTO DE LOCAL COMERCIAL\n\nEn {CIUDAD}, Jalisco, a {FECHA}, celebran";

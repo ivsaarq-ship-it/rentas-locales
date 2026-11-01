@@ -205,3 +205,20 @@ nav .marca{display:none}
 #campana{margin-left:auto;position:relative;background:#fff;color:var(--mor);width:44px;height:44px;border-radius:50%;display:grid;place-items:center;flex:none;text-decoration:none}
 #campana .badge{position:absolute;top:-4px;right:-4px;min-width:22px;height:22px;padding:0 6px;border-radius:11px;background:#D7263D;color:#fff;font-size:13px;font-weight:700;line-height:22px;text-align:center;box-shadow:0 0 0 2px var(--cielo)}
 header>div{min-width:0}
+
+/* INE: casillas fijas de frente y vuelta */
+.ine-casillas{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:8px 0 4px}
+.ine-casilla{position:relative;aspect-ratio:1.58;border:2px dashed var(--borde,#b9c7dc);border-radius:12px;background:#fff;color:var(--mor);display:grid;place-items:center;cursor:pointer;overflow:hidden;padding:0;font:inherit}
+.ine-casilla .i{width:28px;height:28px}
+.ine-casilla span{position:absolute;bottom:6px;left:0;right:0;text-align:center;font-size:14px;font-weight:700}
+.ine-casilla.llena{border-style:solid}
+.ine-casilla.llena img{width:100%;height:100%;object-fit:cover;margin:0;border-radius:0}
+.ine-casilla.llena span{background:rgba(255,255,255,.85);bottom:0;padding:3px 0}
+
+/* Calendario: leyenda con botones y celdas apagadas por el filtro */
+.leyenda-btn{border:0;cursor:pointer;font:inherit;font-size:13px;font-weight:700;padding:8px 14px;border-radius:16px;min-height:36px}
+.leyenda-btn.on{outline:3px solid var(--mor);outline-offset:1px}
+.leyenda-btn.todos{background:#fff;color:var(--mor);border:1px solid var(--mor)}
+.cal-leyenda .leyenda-btn.cal-vac,.cal-leyenda .leyenda-btn.cal-sin{background:#fff;color:var(--gris3);border:1px solid var(--borde)}
+.cal td.apag{opacity:.25}
+.cal thead th a{display:flex;align-items:center;justify-content:center;height:100%;min-height:40px;color:inherit;text-decoration:none}
